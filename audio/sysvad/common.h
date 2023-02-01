@@ -107,6 +107,7 @@ Abstract:
     }
 
 #define SAFE_RELEASE(p) {if (p) { (p)->Release(); (p) = nullptr; } }
+#define SAFE_DELETE_PTR_WITH_TAG(ptr, tag) if(ptr) { ExFreePoolWithTag((ptr), tag); (ptr) = NULL; }
 
 // JACKDESC_RGB(r, g, b) 
 #define JACKDESC_RGB(r, g, b) \
@@ -116,9 +117,32 @@ Abstract:
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
-#define MINWAVERT_POOLTAG   'RWNM'
-#define MINTOPORT_POOLTAG   'RTNM'
-#define MINADAPTER_POOLTAG  'uAyS'
+#define MINWAVERT_POOLTAG           'RWNM'
+#define MINTOPORT_POOLTAG           'RTNM'
+#define MINADAPTER_POOLTAG          'uAyS'
+#define USBSIDEBANDTEST_POOLTAG01   '1AyS'
+#define USBSIDEBANDTEST_POOLTAG02   '2AyS'
+#define USBSIDEBANDTEST_POOLTAG03   '3AyS'
+#define USBSIDEBANDTEST_POOLTAG04   '4AyS'
+#define USBSIDEBANDTEST_POOLTAG05   '5AyS'
+#define USBSIDEBANDTEST_POOLTAG06   '6AyS'
+#define USBSIDEBANDTEST_POOLTAG07   '7AyS'
+#define USBSIDEBANDTEST_POOLTAG08   '8AyS'
+#define USBSIDEBANDTEST_POOLTAG09   '9AyS'
+#define USBSIDEBANDTEST_POOLTAG010  'aAyS'
+#define USBSIDEBANDTEST_POOLTAG011  'bAyS'
+#define USBSIDEBANDTEST_POOLTAG012  'cAyS'
+#define USBSIDEBANDTEST_POOLTAG013  'dAyS'
+#define USBSIDEBANDTEST_POOLTAG014  'eAyS'
+#define USBSIDEBANDTEST_POOLTAG015  'fAyS'
+#define USBSIDEBANDTEST_POOLTAG016  'gAyS'
+#define A2DPSIDEBANDTEST_POOLTAG01  'hAyS'
+#define A2DPSIDEBANDTEST_POOLTAG02  'iAyS'
+#define A2DPSIDEBANDTEST_POOLTAG03  'jAyS'
+#define A2DPSIDEBANDTEST_POOLTAG04  'kAyS'
+#define A2DPSIDEBANDTEST_POOLTAG05  'lAyS'
+#define A2DPSIDEBANDTEST_POOLTAG06  'mAyS'
+#define A2DPSIDEBANDTEST_POOLTAG07  'nAyS'
 
 typedef enum
 {
@@ -138,6 +162,9 @@ typedef enum
     eMicHsDevice,
     eFmRxDevice,
     eSpdifRenderDevice,
+    eUsbHsSpeakerDevice,
+    eUsbHsMicDevice,
+    eA2dpHpSpeakerDevice,
     eMaxDeviceType
     
 } eDeviceType;
@@ -186,6 +213,11 @@ typedef struct _PIN_DEVICE_FORMATS_AND_MODES
     ULONG                               ModeAndDefaultFormatCount;
 
 } PIN_DEVICE_FORMATS_AND_MODES, *PPIN_DEVICE_FORMATS_AND_MODES;
+
+typedef struct _SYSVAD_AUDIOPOSTURE_INFO
+{
+    BOOL OrientationSupported;
+} SYSVAD_AUDIOPOSTURE_INFO, *PSYSVAD_AUDIOPOSTURE_INFO;
 
 //
 // Parameter module handler function prototypes.
@@ -316,10 +348,7 @@ typedef HRESULT (*PFNCREATEMINIPORT)(
     _Out_           PUNKNOWN                              * Unknown,
     _In_            REFCLSID,
     _In_opt_        PUNKNOWN                                UnknownOuter,
-    _When_((PoolType & NonPagedPoolMustSucceed) != 0,
-       __drv_reportError("Must succeed pool allocations are forbidden. "
-			 "Allocation failures cause a system crash"))
-    _In_            POOL_TYPE                               PoolType, 
+    _In_            POOL_FLAGS                              PoolFlags, 
     _In_            PUNKNOWN                                UnknownAdapter,
     _In_opt_        PVOID                                   DeviceContext,
     _In_            PENDPOINT_MINIPAIR                      MiniportPair
@@ -335,11 +364,12 @@ typedef struct _SYSVAD_DEVPROPERTY {
     __field_bcount_opt(BufferSize) PVOID Buffer;
 } SYSVAD_DEVPROPERTY, PSYSVAD_DEVPROPERTY;
 
-#define ENDPOINT_NO_FLAGS                   0x00000000
-#define ENDPOINT_OFFLOAD_SUPPORTED          0x00000001
-#define ENDPOINT_SOUNDDETECTOR_SUPPORTED    0x00000002
-#define ENDPOINT_CELLULAR_PROVIDER1         0x00000010
-#define ENDPOINT_CELLULAR_PROVIDER2         0x00000020
+#define ENDPOINT_NO_FLAGS                       0x00000000
+#define ENDPOINT_OFFLOAD_SUPPORTED              0x00000001
+#define ENDPOINT_LOOPBACK_SUPPORTED             0x00000002
+#define ENDPOINT_SOUNDDETECTOR_SUPPORTED        0x00000004
+#define ENDPOINT_CELLULAR_PROVIDER1             0x00000008
+#define ENDPOINT_CELLULAR_PROVIDER2             0x00000010
 
 //
 // Endpoint miniport pair (wave/topology) descriptor.
@@ -349,14 +379,16 @@ typedef struct _ENDPOINT_MINIPAIR
     eDeviceType                     DeviceType;
 
     // Topology miniport.
-    PWSTR                           TopoName;               // make sure this name matches with SYSVAD.<TopoName>.szPname in the inf's [Strings] section
+    PWSTR                           TopoName;               // make sure this or the template name matches with SYSVAD.<TopoName>.szPname in the inf's [Strings] section
+    PWSTR                           TemplateTopoName;       // optional template name
     PFNCREATEMINIPORT               TopoCreateCallback;
     PCFILTER_DESCRIPTOR*            TopoDescriptor;
     ULONG                           TopoInterfacePropertyCount;
     const SYSVAD_DEVPROPERTY*       TopoInterfaceProperties;
 
     // Wave RT miniport.
-    PWSTR                           WaveName;               // make sure this name matches with SYSVAD.<WaveName>.szPname in the inf's [Strings] section
+    PWSTR                           WaveName;               // make sure this or the template name matches with SYSVAD.<WaveName>.szPname in the inf's [Strings] section
+    PWSTR                           TemplateWaveName;       // optional template name
     PFNCREATEMINIPORT               WaveCreateCallback;
     PCFILTER_DESCRIPTOR*            WaveDescriptor;
     ULONG                           WaveInterfacePropertyCount;
@@ -386,9 +418,30 @@ typedef struct _ENDPOINT_MINIPAIR
 DEFINE_GUID(IID_IAdapterCommon,
 0x7eda2950, 0xbf9f, 0x11d0, 0x87, 0x1f, 0x0, 0xa0, 0xc9, 0x11, 0xb5, 0x44);
 
+// {4E1E5697-4D04-4438-A913-B0EEE03732BA}
+DEFINE_GUID(IID_IMiniportChange, 
+0x4e1e5697, 0x4d04, 0x4438, 0xa9, 0x13, 0xb0, 0xee, 0xe0, 0x37, 0x32, 0xba);
+
 //=============================================================================
 // Interfaces
 //=============================================================================
+
+///////////////////////////////////////////////////////////////////////////////
+// IID_IMiniportChange
+//
+DECLARE_INTERFACE_(IMiniportChange, IUnknown)
+{
+    STDMETHOD_(NTSTATUS, NotifyEndpointPair) 
+    ( 
+        THIS_
+        _In_ WCHAR              *RenderEndpointTopoName,
+        _In_ ULONG              RenderEndpointNameLen,
+        _In_ ULONG              RenderPinId,
+        _In_ WCHAR              *CaptureEndpointTopoName,
+        _In_ ULONG              CaptureEndpointNameLen,
+        _In_ ULONG              CapturePinId
+    ) PURE;
+};
 
 ///////////////////////////////////////////////////////////////////////////////
 // IAdapterCommon
@@ -528,6 +581,7 @@ DECLARE_INTERFACE_(IAdapterCommon, IUnknown)
     ( 
         _In_opt_        PIRP                                        Irp,
         _In_            PWSTR                                       Name,
+        _In_opt_        PWSTR                                       TemplateName,
         _In_            REFGUID                                     PortClassId,
         _In_            REFGUID                                     MiniportClassId,
         _In_opt_        PFNCREATEMINIPORT                           MiniportCreate,
@@ -608,10 +662,46 @@ DECLARE_INTERFACE_(IAdapterCommon, IUnknown)
        
 #endif // SYSVAD_BTH_BYPASS
 
+#ifdef SYSVAD_USB_SIDEBAND
+    STDMETHOD_(NTSTATUS,        InitUsbSideband)();
+
+    STDMETHOD_(NTSTATUS,        AddDeviceAsPowerDependency)
+    (
+        _In_ PDEVICE_OBJECT pdo
+    );
+
+    STDMETHOD_(NTSTATUS,        RemoveDeviceAsPowerDependency)
+    (
+        _In_ PDEVICE_OBJECT pdo
+    );
+
+#endif // SYSVAD_USB_SIDEBAND
+
+#ifdef SYSVAD_A2DP_SIDEBAND
+    STDMETHOD_(NTSTATUS,        InitA2dpSideband)();
+
+#endif // SYSVAD_A2DP_SIDEBAND
+
     STDMETHOD_(VOID, Cleanup)();
+
+#ifdef SYSVAD_USB_SIDEBAND
+    STDMETHOD_(NTSTATUS, UpdatePowerRelations)(_In_ PIRP Irp);
+#endif // SYSVAD_USB_SIDEBAND
+
+    STDMETHOD_(NTSTATUS, NotifyEndpointPair) 
+    ( 
+        THIS_
+        _In_ WCHAR  *RenderEndpointTopoName,
+        _In_ ULONG  RenderEndpointNameLen,
+        _In_ ULONG  RenderPinId,
+        _In_ WCHAR  *CaptureEndpointTopoName,
+        _In_ ULONG  CaptureEndpointNameLen,
+        _In_ ULONG  CapturePinId
+    ) PURE;
 };
 
 typedef IAdapterCommon *PADAPTERCOMMON;
+typedef IMiniportChange *PMINIPORTCHANGE;
 
 //=============================================================================
 // Function Prototypes
@@ -622,14 +712,11 @@ NewAdapterCommon
     _Out_       PUNKNOWN *              Unknown,
     _In_        REFCLSID,
     _In_opt_    PUNKNOWN                UnknownOuter,
-    _When_((PoolType & NonPagedPoolMustSucceed) != 0,
-        __drv_reportError("Must succeed pool allocations are forbidden. "
-			    "Allocation failures cause a system crash"))
-    _In_        POOL_TYPE               PoolType 
+    _In_        POOL_FLAGS              PoolFlags
 );
 
 
-#ifdef SYSVAD_BTH_BYPASS
+#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND)
 
 // Event callback definition.
 typedef VOID (*PFNEVENTNOTIFICATION)(
@@ -637,48 +724,80 @@ typedef VOID (*PFNEVENTNOTIFICATION)(
 );
 
 DEFINE_GUID(IID_IBthHfpDeviceCommon,
-0x576b824a, 0x5248, 0x47b1, 0x82, 0xc5, 0xe4, 0x7b, 0xa7, 0xe2, 0xaf, 0x2b);
+    0x576b824a, 0x5248, 0x47b1, 0x82, 0xc5, 0xe4, 0x7b, 0xa7, 0xe2, 0xaf, 0x2b);
+
+DEFINE_GUID(IID_IUsbHsDeviceCommon,
+    0xb57b5547, 0x63f, 0x4a58, 0xb3, 0x7, 0x90, 0xb2, 0xfc, 0x6c, 0x32, 0xdb);
+
+DEFINE_GUID(IID_IA2dpHpDeviceCommon,
+    0xe1a6f128, 0x905, 0x4c18, 0xb4, 0x84, 0xc2, 0xca, 0x45, 0xb1, 0x57, 0x6d);
+
+
 
 //=============================================================================
 // Interfaces
 //=============================================================================
 
 ///////////////////////////////////////////////////////////////////////////////
-// IAdapterCommon
+// ISidebandDeviceCommon
 //
-DECLARE_INTERFACE_(IBthHfpDeviceCommon, IUnknown)
+DECLARE_INTERFACE_(ISidebandDeviceCommon, IUnknown)
 {
     STDMETHOD_(BOOL,                IsVolumeSupported)
     (
         THIS_
+        _In_        eDeviceType             deviceType
     ) PURE;
     
-    STDMETHOD_(PKSPROPERTY_VALUES,  GetVolumeSettings)
+    STDMETHOD_(PVOID,               GetVolumeSettings)
     (
         THIS_
-        _Out_ PULONG    Size 
+        _In_        eDeviceType             deviceType,
+        _Out_       PULONG                  Size 
     ) PURE;
 
-    STDMETHOD_(LONG,                GetSpeakerVolume)
+    STDMETHOD_(NTSTATUS,            GetVolume)
     (
         THIS_
+        _In_        eDeviceType             deviceType,
+        _In_        LONG                    Channel,
+        _Out_       LONG                    *pVolume
     ) PURE;
 
-    STDMETHOD_(NTSTATUS,            SetSpeakerVolume)
+    STDMETHOD_(NTSTATUS,            SetVolume)
     (
         THIS_
-        _In_ ULONG      Volume
+        _In_        eDeviceType             deviceType,
+        _In_        LONG                    Channel,
+        _In_        LONG                    Volume
+    ) PURE;
+
+    STDMETHOD_(BOOL,                IsMuteSupported)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType
     ) PURE;
     
-    STDMETHOD_(LONG,                GetMicVolume)
+    STDMETHOD_(PVOID,               GetMuteSettings)
     (
         THIS_
+        _In_        eDeviceType             deviceType,
+        _Out_       PULONG                  Size 
     ) PURE;
 
-    STDMETHOD_(NTSTATUS,            SetMicVolume)
+    STDMETHOD_(LONG,                GetMute)
     (
         THIS_
-        _In_ ULONG      Volume
+        _In_        eDeviceType             deviceType,
+        _In_        LONG                    Channel
+    ) PURE;
+
+    STDMETHOD_(NTSTATUS,            SetMute)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType,
+        _In_        LONG                    Channel,
+        _In_        LONG                    Mute
     ) PURE;
 
     STDMETHOD_(BOOL,                GetConnectionStatus)
@@ -699,51 +818,78 @@ DECLARE_INTERFACE_(IBthHfpDeviceCommon, IUnknown)
     STDMETHOD_(BOOL,                GetStreamStatus)
     (
         THIS_
+        _In_        eDeviceType             deviceType
     ) PURE;
 
     STDMETHOD_(NTSTATUS,            StreamOpen)
     (
         THIS_
+        _In_        eDeviceType             deviceType
+    ) PURE;
+
+    STDMETHOD_(NTSTATUS,            StreamStart)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType
+    ) PURE;
+
+    STDMETHOD_(NTSTATUS,            StreamSuspend)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType
     ) PURE;
 
     STDMETHOD_(NTSTATUS,            StreamClose)
     (
         THIS_
+        _In_        eDeviceType             deviceType
     ) PURE;
 
     STDMETHOD_(GUID,                GetContainerId)
     (
         THIS_
+        _In_        eDeviceType             deviceType
     ) PURE;
 
-    STDMETHOD_(VOID,                SetSpeakerVolumeHandler)
+    STDMETHOD_(VOID,                SetVolumeHandler)
     (
         THIS_
-        _In_opt_    PFNEVENTNOTIFICATION    EventHandler,
-        _In_opt_    PVOID                   EventHandlerContext
-    ) PURE;
-    
-    STDMETHOD_(VOID,                SetSpeakerConnectionStatusHandler)
-    (
-        THIS_
-        _In_opt_    PFNEVENTNOTIFICATION    EventHandler,
-        _In_opt_    PVOID                   EventHandlerContext
-    ) PURE;
-    
-    STDMETHOD_(VOID,                SetMicVolumeHandler)
-    (
-        THIS_
-        _In_opt_    PFNEVENTNOTIFICATION    EventHandler,
-        _In_opt_    PVOID                   EventHandlerContext
-    ) PURE;
-    
-    STDMETHOD_(VOID,                SetMicConnectionStatusHandler)
-    (
-        THIS_
+        _In_        eDeviceType             deviceType,
         _In_opt_    PFNEVENTNOTIFICATION    EventHandler,
         _In_opt_    PVOID                   EventHandlerContext
     ) PURE;
 
+    STDMETHOD_(VOID,                SetMuteHandler)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType,
+        _In_opt_    PFNEVENTNOTIFICATION    EventHandler,
+        _In_opt_    PVOID                   EventHandlerContext
+    ) PURE;
+    
+    STDMETHOD_(VOID,                SetConnectionStatusHandler)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType,
+        _In_opt_    PFNEVENTNOTIFICATION    EventHandler,
+        _In_opt_    PVOID                   EventHandlerContext
+    ) PURE;
+
+    STDMETHOD_(VOID,                SetFormatChangeHandler)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType,
+        _In_opt_    PFNEVENTNOTIFICATION    EventHandler,
+        _In_opt_    PVOID                   EventHandlerContext
+    ) PURE;
+
+    STDMETHOD_(PPIN_DEVICE_FORMATS_AND_MODES, GetFormatsAndModes)
+    (
+        THIS_
+        _In_        eDeviceType             deviceType
+    ) PURE;
+
+    _IRQL_requires_max_(DISPATCH_LEVEL)
     STDMETHOD_(BOOL,                IsNRECSupported)
     (
         THIS_
@@ -754,9 +900,10 @@ DECLARE_INTERFACE_(IBthHfpDeviceCommon, IUnknown)
         THIS_
     ) PURE;
 };
-typedef IBthHfpDeviceCommon *PBTHHFPDEVICECOMMON;
+typedef ISidebandDeviceCommon *PSIDEBANDDEVICECOMMON;
 
 #endif // SYSVAD_BTH_BYPASS
 
 #endif  //_SYSVAD_COMMON_H_
+
 

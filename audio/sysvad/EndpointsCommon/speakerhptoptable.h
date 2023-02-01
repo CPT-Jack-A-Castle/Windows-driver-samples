@@ -15,6 +15,8 @@ Abstract:
 #ifndef _SYSVAD_SPEAKERHPTOPTABLE_H_
 #define _SYSVAD_SPEAKERHPTOPTABLE_H_
 
+#include <mintopo.h>
+
 //=============================================================================
 static
 KSJACK_DESCRIPTION SpeakerHpJackDesc =
@@ -129,10 +131,26 @@ PCPROPERTY_ITEM PropertiesSpeakerHpTopoFilter[] =
         KSPROPERTY_JACK_DESCRIPTION2,
         KSPROPERTY_TYPE_GET | KSPROPERTY_TYPE_BASICSUPPORT,
         PropertyHandler_SpeakerHpTopoFilter
+    },
+    {
+        &KSPROPSETID_AudioResourceManagement,
+        KSPROPERTY_AUDIORESOURCEMANAGEMENT_RESOURCEGROUP,
+        KSPROPERTY_TYPE_SET,
+        PropertyHandler_SpeakerHpTopoFilter
     }
 };
 
-DEFINE_PCAUTOMATION_TABLE_PROP(AutomationSpeakerHpTopoFilter, PropertiesSpeakerHpTopoFilter);
+static PCEVENT_ITEM SpeakerHpJackInfoChangeEvent[] =
+{
+    {
+        &KSEVENTSETID_PinCapsChange,   // Something changed
+        KSEVENT_PINCAPS_JACKINFOCHANGE,  // Jack Info Changes
+        KSEVENT_TYPE_ENABLE | KSEVENT_TYPE_BASICSUPPORT,
+        CMiniportTopology_EventHandler_JackState
+    }
+};
+
+DEFINE_PCAUTOMATION_TABLE_PROP_EVENT(AutomationSpeakerHpTopoFilter, PropertiesSpeakerHpTopoFilter, SpeakerHpJackInfoChangeEvent);
 
 //=============================================================================
 static

@@ -22,7 +22,7 @@ Revision History:
 --*/
 
 
-#include <classp.h>
+#include "classp.h"
 
 PVOID
 DefaultStorageRequestBlockAllocateRoutine(
@@ -44,7 +44,7 @@ Return Value:
 
 --*/
 {
-    return ExAllocatePoolWithTag(NonPagedPoolNx, ByteSize, '+brs');
+    return ExAllocatePoolZero(NonPagedPoolNx, ByteSize, '+brs');
 }
 
 

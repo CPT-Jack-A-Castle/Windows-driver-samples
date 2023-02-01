@@ -29,6 +29,12 @@ Abstract:
 #ifdef SYSVAD_BTH_BYPASS
 #include "bthhfpminipairs.h"
 #endif // SYSVAD_BTH_BYPASS
+#ifdef SYSVAD_USB_SIDEBAND
+#include "usbhsminipairs.h"
+#endif // SYSVAD_USB_SIDEBAND
+#ifdef SYSVAD_A2DP_SIDEBAND
+#include "a2dphpminipairs.h"
+#endif // SYSVAD_A2DP_SIDEBAND
 
 
 
@@ -245,6 +251,7 @@ DRIVER_DISPATCH PnpHandler;
 //
 DWORD g_DoNotCreateDataFiles = 0;  // default is off.
 DWORD g_DisableToneGenerator = 0;  // default is to generate tones.
+UNICODE_STRING g_RegistryPath;      // This is used to store the registry settings path for the driver
 
 
 #ifdef SYSVAD_BTH_BYPASS
@@ -256,9 +263,41 @@ DWORD g_DisableToneGenerator = 0;  // default is to generate tones.
 DWORD g_DisableBthScoBypass = 0;   // default is SCO bypass enabled.
 #endif // SYSVAD_BTH_BYPASS
 
+#ifdef SYSVAD_USB_SIDEBAND
+//
+// This driver listens for arrival/removal of the USB Sideband interfaces by 
+// default. Use the registry value DisableUsbSideband (DWORD) > 0 to override 
+// this default.
+//
+DWORD g_DisableUsbSideband = 0;   // default is USB bypass enabled.
+#endif // SYSVAD_USB_SIDEBAND
+
+#ifdef SYSVAD_A2DP_SIDEBAND
+//
+// This driver listens for arrival/removal of the Bluetooth A2DP Sideband interfaces by 
+// default. Use the registry value DisableA2dpSideband (DWORD) > 0 to override 
+// this default.
+//
+DWORD g_DisableA2dpSideband = 0; // default is A2DP bypass enabled.
+#endif
+
 //-----------------------------------------------------------------------------
 // Functions
 //-----------------------------------------------------------------------------
+
+#pragma code_seg("PAGE")
+void ReleaseRegistryStringBuffer()
+{
+    PAGED_CODE();
+
+    if (g_RegistryPath.Buffer != NULL)
+    {
+        ExFreePool(g_RegistryPath.Buffer);
+        g_RegistryPath.Buffer = NULL;
+        g_RegistryPath.Length = 0;
+        g_RegistryPath.MaximumLength = 0;
+    }
+}
 
 //=============================================================================
 #pragma code_seg("PAGE")
@@ -287,6 +326,8 @@ Environment:
 
     DPF(D_TERSE, ("[DriverUnload]"));
 
+    ReleaseRegistryStringBuffer();
+
     if (DriverObject == NULL)
     {
         goto Done;
@@ -311,6 +352,49 @@ Environment:
 
 Done:
     return;
+}
+
+//=============================================================================
+#pragma code_seg("INIT")
+__drv_requiresIRQL(PASSIVE_LEVEL)
+NTSTATUS
+CopyRegistrySettingsPath(
+    _In_ PUNICODE_STRING RegistryPath
+)
+/*++
+
+Routine Description:
+
+Copies the following registry path to a global variable.
+
+\REGISTRY\MACHINE\SYSTEM\ControlSetxxx\Services\<driver>\Parameters
+
+Arguments:
+
+RegistryPath - Registry path passed to DriverEntry
+
+Returns:
+
+NTSTATUS - SUCCESS if able to configure the framework
+
+--*/
+
+{
+    // Initializing the unicode string, so that if it is not allocated it will not be deallocated too.
+    RtlInitUnicodeString(&g_RegistryPath, NULL);
+
+    g_RegistryPath.MaximumLength = RegistryPath->Length + sizeof(WCHAR);
+
+    g_RegistryPath.Buffer = (PWCH)ExAllocatePool2(POOL_FLAG_PAGED, g_RegistryPath.MaximumLength, MINADAPTER_POOLTAG);
+
+    if (g_RegistryPath.Buffer == NULL)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    RtlAppendUnicodeToString(&g_RegistryPath, RegistryPath->Buffer);
+
+    return STATUS_SUCCESS;
 }
 
 //=============================================================================
@@ -348,7 +432,10 @@ Returns:
         { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"DisableToneGenerator", &g_DisableToneGenerator, (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD, &g_DisableToneGenerator, sizeof(ULONG)},
 #ifdef SYSVAD_BTH_BYPASS
         { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"DisableBthScoBypass",  &g_DisableBthScoBypass,  (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD, &g_DisableBthScoBypass,  sizeof(ULONG)},
-#endif
+#endif // SYSVAD_BTH_BYPASS
+#ifdef SYSVAD_USB_SIDEBAND
+        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"DisableUsbSideband",  &g_DisableUsbSideband,  (REG_DWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_DWORD, &g_DisableUsbSideband,  sizeof(ULONG)},
+#endif // SYSVAD_USB_SIDEBAND
         { NULL,   0,                                                        NULL,                    NULL,                    0,                                                             NULL,                    0}
     };
 
@@ -361,13 +448,11 @@ Returns:
     parametersPath.MaximumLength =
         RegistryPath->Length + sizeof(L"\\Parameters") + sizeof(WCHAR);
 
-    parametersPath.Buffer = (PWCH) ExAllocatePoolWithTag(PagedPool, parametersPath.MaximumLength, MINADAPTER_POOLTAG);
+    parametersPath.Buffer = (PWCH) ExAllocatePool2(POOL_FLAG_PAGED, parametersPath.MaximumLength, MINADAPTER_POOLTAG);
     if (parametersPath.Buffer == NULL) 
     {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
-
-    RtlZeroMemory(parametersPath.Buffer, parametersPath.MaximumLength);
 
     RtlAppendUnicodeToString(&parametersPath, RegistryPath->Buffer);
     RtlAppendUnicodeToString(&parametersPath, L"\\Parameters");
@@ -396,6 +481,9 @@ Returns:
 #ifdef SYSVAD_BTH_BYPASS
     DPF(D_VERBOSE, ("DisableBthScoBypass: %u", g_DisableBthScoBypass));
 #endif // SYSVAD_BTH_BYPASS
+#ifdef SYSVAD_USB_SIDEBAND
+    DPF(D_VERBOSE, ("DisableUsbSideband: %u", g_DisableUsbSideband));
+#endif // SYSVAD_USB_SIDEBAND
 
     //
     // Cleanup.
@@ -440,6 +528,16 @@ Return Value:
     WDF_DRIVER_CONFIG           config;
 
     DPF(D_TERSE, ("[DriverEntry]"));
+
+    // Copy registry Path name in a global variable to be used by modules inside driver.
+    // !! NOTE !! Inside this function we are initializing the registrypath, so we MUST NOT add any failing calls
+    // before the following call.
+    ntStatus = CopyRegistrySettingsPath(RegistryPathName);
+    IF_FAILED_ACTION_JUMP(
+        ntStatus,
+        DPF(D_ERROR, ("Registry path copy error 0x%x", ntStatus)),
+        Done);
+
     //
     // Get registry configuration.
     //
@@ -505,6 +603,8 @@ Done:
         {
             WdfDriverMiniportUnload(WdfGetDriver());
         }
+
+        ReleaseRegistryStringBuffer();
     }
     
     return ntStatus;
@@ -556,13 +656,13 @@ Return Value:
     DPF(D_TERSE, ("[AddDevice]"));
 
     maxObjects = g_MaxMiniports;
-    
+
 #ifdef SYSVAD_BTH_BYPASS
-    // 
-    // Allow three (3) Bluetooth hands-free profile devices.
-    //
-    maxObjects += g_MaxBthHfpMiniports * 3; 
+    maxObjects += g_MaxBthHfpMiniports; 
 #endif // SYSVAD_BTH_BYPASS
+#ifdef SYSVAD_USB_SIDEBAND
+    maxObjects += g_MaxUsbHsMiniports; 
+#endif // SYSVAD_USB_SIDEBAND
 
     // Tell the class driver to add the device.
     //
@@ -963,7 +1063,7 @@ Return Value:
                                 &pUnknownCommon,
                                 IID_IAdapterCommon,
                                 NULL,
-                                NonPagedPoolNx 
+                                POOL_FLAG_NON_PAGED 
                                 );
     IF_FAILED_JUMP(ntStatus, Exit);
 
@@ -1000,6 +1100,25 @@ Return Value:
         IF_FAILED_JUMP(ntStatus, Exit);
     }
 #endif // SYSVAD_BTH_BYPASS
+#ifdef SYSVAD_USB_SIDEBAND
+    if (!g_DisableUsbSideband)
+    {
+        //
+        // Init infrastructure for USB Sideband devices.
+        //
+        ntStatus = pAdapterCommon->InitUsbSideband();
+        IF_FAILED_JUMP(ntStatus, Exit);
+    }
+#endif // SYSVAD_USB_SIDEBAND
+
+#ifdef SYSVAD_A2DP_SIDEBAND
+    if (!g_DisableA2dpSideband)
+    {
+        // Init infrastructure for Bluetooth A2DP sideband devices.
+        ntStatus = pAdapterCommon->InitA2dpSideband();
+        IF_FAILED_JUMP(ntStatus, Exit);
+    }
+#endif
 
 #ifdef _USE_SingleComponentMultiFxStates
     //
@@ -1074,11 +1193,41 @@ Return Value:
     //
     stack = IoGetCurrentIrpStackLocation(_Irp);
 
-
-    if ((IRP_MN_REMOVE_DEVICE == stack->MinorFunction) ||
-        (IRP_MN_SURPRISE_REMOVAL == stack->MinorFunction) ||
-        (IRP_MN_STOP_DEVICE == stack->MinorFunction))
+    switch (stack->MinorFunction)
     {
+
+#ifdef SYSVAD_USB_SIDEBAND
+    case IRP_MN_QUERY_DEVICE_RELATIONS:
+
+        switch (stack->Parameters.QueryDeviceRelations.Type)
+        {
+        case PowerRelations:
+
+            ext = static_cast<PortClassDeviceContext*>(_DeviceObject->DeviceExtension);
+
+            if (ext->m_pCommon != NULL)
+            {
+                ntStatus = ext->m_pCommon->UpdatePowerRelations(_Irp);
+                if (!NT_SUCCESS(ntStatus))
+                {
+                    // Complete the Irp with failure, no need to further process in PortCls
+                    _Irp->IoStatus.Status = ntStatus;
+                    IoCompleteRequest(_Irp, IO_NO_INCREMENT);
+                    return ntStatus;
+                }
+            }
+
+            break;
+
+        default:
+            break;
+        }
+        break;
+#endif // SYSVAD_USB_SIDEBAND
+
+    case IRP_MN_REMOVE_DEVICE:
+    case IRP_MN_SURPRISE_REMOVAL:
+    case IRP_MN_STOP_DEVICE:
         ext = static_cast<PortClassDeviceContext*>(_DeviceObject->DeviceExtension);
 
         if (ext->m_pCommon != NULL)
@@ -1088,6 +1237,10 @@ Return Value:
             ext->m_pCommon->Release();
             ext->m_pCommon = NULL;
         }
+        break;
+
+    default:
+        break;
     }
     
     ntStatus = PcDispatchIrp(_DeviceObject, _Irp);
@@ -1096,4 +1249,5 @@ Return Value:
 }
 
 #pragma code_seg()
+
 

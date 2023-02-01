@@ -48,6 +48,7 @@ Abstract:
 #define DEFAULT_BUFFER_SIZE         DEFAULT_FRAME_SIZE * DEFAULT_FRAME_COUNT
 
 #define DEFAULT_FILE_NAME           L"\\DosDevices\\C:\\STREAM"
+#define OSDATA_FILE_NAME            L"\\DosDevices\\O:\\STREAM"
 #define OFFLOAD_FILE_NAME           L"OFFLOAD"
 #define HOST_FILE_NAME              L"HOST"
 
@@ -451,6 +452,10 @@ CSaveData::Initialize
     NTSTATUS    ntStatus = STATUS_SUCCESS;
     WCHAR       szTemp[MAX_PATH];
     size_t      cLen;
+    OBJECT_ATTRIBUTES objectAttributes; 
+    UNICODE_STRING    osDataVolumeString;
+    HANDLE            osDataFileHandle = NULL;     
+    IO_STATUS_BLOCK   ioStatusBlock;
 
     DPF_ENTER(("[CSaveData::Initialize]"));
 
@@ -463,18 +468,51 @@ CSaveData::Initialize
         m_ulStreamId++;
     }
 
+    // Probe if OSData volume exists.
+    //
+    RtlStringCchPrintfW(szTemp, MAX_PATH, L"%s_probe.txt", OSDATA_FILE_NAME);
+    RtlInitUnicodeString(&osDataVolumeString, szTemp);
+    InitializeObjectAttributes
+    (
+        &objectAttributes,
+        &osDataVolumeString,
+        OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+        NULL,
+        NULL
+    );
+
+    ntStatus =
+        ZwCreateFile
+        (
+            &osDataFileHandle,
+            GENERIC_WRITE | SYNCHRONIZE,
+            &objectAttributes,
+            &ioStatusBlock,
+            NULL,
+            FILE_ATTRIBUTE_NORMAL,
+            0,
+            FILE_OVERWRITE_IF,
+            FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+            NULL,
+            0
+        );
+    if (NT_SUCCESS(ntStatus))
+    {
+        ZwClose(osDataFileHandle);
+    }
+
     // Allocate data file name.
     //
-    RtlStringCchPrintfW(szTemp, MAX_PATH, L"%s_%s_%d.wav", DEFAULT_FILE_NAME, _bOffloaded ? OFFLOAD_FILE_NAME : HOST_FILE_NAME, _bOffloaded ? m_ulOffloadStreamId : m_ulStreamId);
+    RtlStringCchPrintfW(szTemp, MAX_PATH, L"%s_%s_%d.wav", NT_SUCCESS(ntStatus) ? OSDATA_FILE_NAME : DEFAULT_FILE_NAME, _bOffloaded ? OFFLOAD_FILE_NAME : HOST_FILE_NAME, _bOffloaded ? m_ulOffloadStreamId : m_ulStreamId);
     m_FileName.Length = 0;
     ntStatus = RtlStringCchLengthW (szTemp, sizeof(szTemp)/sizeof(szTemp[0]), &cLen);
     if (NT_SUCCESS(ntStatus))
     {
         m_FileName.MaximumLength = (USHORT)((cLen * sizeof(WCHAR)) +  sizeof(WCHAR));//convert to wchar and add room for NULL
         m_FileName.Buffer = (PWSTR)
-            ExAllocatePoolWithTag
+            ExAllocatePool2
             (
-                PagedPool,
+                POOL_FLAG_PAGED,
                 m_FileName.MaximumLength,
                 SAVEDATA_POOLTAG3
             );
@@ -494,9 +532,9 @@ CSaveData::Initialize
         DPF(D_BLAB, ("[New DataFile -- %S", m_FileName.Buffer));
 
         m_pDataBuffer = (PBYTE)
-            ExAllocatePoolWithTag
+            ExAllocatePool2
             (
-                NonPagedPoolNx,
+                POOL_FLAG_NON_PAGED,
                 m_ulBufferSize,
                 SAVEDATA_POOLTAG4
             );
@@ -505,10 +543,6 @@ CSaveData::Initialize
             DPF(D_TERSE, ("[Could not allocate memory for Saving Data]"));
             ntStatus = STATUS_INSUFFICIENT_RESOURCES;
         }
-        else 
-        {
-            RtlZeroMemory(m_pDataBuffer, m_ulBufferSize);
-        }
     }
 
     // Allocate memory for frame usage flags and m_pFilePtr.
@@ -516,9 +550,9 @@ CSaveData::Initialize
     if (NT_SUCCESS(ntStatus))
     {
         m_fFrameUsed = (PBOOL)
-            ExAllocatePoolWithTag
+            ExAllocatePool2
             (
-                NonPagedPoolNx,
+                POOL_FLAG_NON_PAGED,
                 m_ulFrameCount * sizeof(BOOL) +
                 sizeof(LARGE_INTEGER),
                 SAVEDATA_POOLTAG2
@@ -546,7 +580,6 @@ CSaveData::Initialize
         //
         m_pFilePtr = (PLARGE_INTEGER)
             (((PBYTE) m_fFrameUsed) + m_ulFrameCount * sizeof(BOOL));
-        RtlZeroMemory(m_fFrameUsed, m_ulFrameCount * sizeof(BOOL) + sizeof(LARGE_INTEGER));
 
         // Create data file.
         InitializeObjectAttributes
@@ -608,9 +641,9 @@ CSaveData::InitializeWorkItems
     }
 
     m_pWorkItems = (PSAVEWORKER_PARAM)
-        ExAllocatePoolWithTag
+        ExAllocatePool2
         (
-            NonPagedPoolNx,
+            POOL_FLAG_NON_PAGED,
             sizeof(SAVEWORKER_PARAM) * MAX_WORKER_ITEM_COUNT,
             SAVEDATA_POOLTAG
         );
@@ -737,9 +770,9 @@ CSaveData::SetDataFormat
         }
 
         m_waveFormat = (PWAVEFORMATEX)
-            ExAllocatePoolWithTag
+            ExAllocatePool2
             (
-                NonPagedPoolNx,
+                POOL_FLAG_NON_PAGED,
                 (pwfx->wFormatTag == WAVE_FORMAT_PCM) ?
                 sizeof( PCMWAVEFORMAT ) :
                 sizeof( WAVEFORMATEX ) + pwfx->cbSize,
@@ -792,9 +825,9 @@ CSaveData::SetMaxWriteSize
     // Alloc memory for buffer.
     //
     buffer = (PBYTE)
-        ExAllocatePoolWithTag
+        ExAllocatePool2
         (
-            NonPagedPoolNx,
+            POOL_FLAG_NON_PAGED,
             bufferSize,
             SAVEDATA_POOLTAG4
         );
@@ -804,8 +837,6 @@ CSaveData::SetMaxWriteSize
         ntStatus = STATUS_INSUFFICIENT_RESOURCES;
         goto Done;
     }
-
-    RtlZeroMemory(buffer, bufferSize);
 
     //
     // Free old one.

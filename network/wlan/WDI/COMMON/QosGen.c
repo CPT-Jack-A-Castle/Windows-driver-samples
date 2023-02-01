@@ -487,7 +487,7 @@ QosFillHeader(
 	IN	PRT_TCB		pTcb
 )
 {
-	u1Byte		i;
+	u2Byte		i;
 	u2Byte		FragIndex = 0;
 	u2Byte		FragBufferIndex = 0;
 	pu1Byte		pHeader = (pu1Byte)(GET_FRAME_OF_FIRST_FRAG(Adapter, pTcb));
@@ -1280,7 +1280,7 @@ QosRemoveTs(
 		u1Byte Key[QOS_TSTREAM_KEY_SIZE];
 
 		PlatformMoveMemory(Key, pTs->__HashEntry.Key, QOS_TSTREAM_KEY_SIZE);
-		RtRemvoeKeyFromVaHashTable(pStaQos->hApTsTable, Key);
+		RtRemoveKeyFromVaHashTable(pStaQos->hApTsTable, Key);
 	}
 
 }

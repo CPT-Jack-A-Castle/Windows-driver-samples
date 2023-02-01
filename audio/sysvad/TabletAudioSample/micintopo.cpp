@@ -204,7 +204,7 @@ Return Value:
                         // 0x00000001 - JACKDESC2_PRESENCE_DETECT_CAPABILITY
                         // 0x00000002 - JACKDESC2_DYNAMIC_FORMAT_CHANGE_CAPABILITY 
                         //
-                        pDesc->JackCapabilities = JACKDESC2_PRESENCE_DETECT_CAPABILITY;
+                        pDesc->JackCapabilities = 0;
                         
                         ntStatus = STATUS_SUCCESS;
                     }
@@ -248,12 +248,6 @@ Return Value:
     // MajorTarget is a pointer to miniport object for miniports.
     //
     NTSTATUS            ntStatus = STATUS_INVALID_DEVICE_REQUEST;
-
-    //
-    // This line shows how to get a pointer to the miniport topology object.
-    //
-    PCMiniportTopology  pMiniport = (PCMiniportTopology)PropertyRequest->MajorTarget;
-    UNREFERENCED_VAR(pMiniport);
 
     if (IsEqualGUIDAligned(*PropertyRequest->PropertyItem->Set, KSPROPSETID_Jack))
     {

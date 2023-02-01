@@ -23,6 +23,7 @@ Abstract:
 #include <wdfminiport.h>
 #include <MsApoFxProxy.h>
 #include <Ntstrsafe.h>
+#include "NewDelete.h"
 
 //=============================================================================
 // Defines
@@ -67,7 +68,7 @@ DEFINE_GUIDSTRUCT("5B722BF8-F0AB-47ee-B9C8-8D61D31375A1", PID_SYSVAD);
 #define KSPROPERTY_TYPE_ALL         KSPROPERTY_TYPE_BASICSUPPORT | \
                                     KSPROPERTY_TYPE_GET | \
                                     KSPROPERTY_TYPE_SET
-                                    
+
 // Specific node numbers
 #define DEV_SPECIFIC_VT_BOOL        9
 #define DEV_SPECIFIC_VT_I4          10
@@ -90,7 +91,7 @@ DEFINE_GUIDSTRUCT("5B722BF8-F0AB-47ee-B9C8-8D61D31375A1", PID_SYSVAD);
 
 #define VALUE_NORMALIZE(v, step) \
     ((v) > 0 ? VALUE_NORMALIZE_P((v), (step)) : -(VALUE_NORMALIZE_P(-(v), (step))))
-    
+
 #define VALUE_NORMALIZE_IN_RANGE_EX(v, min, max, step) \
     ((v) > (max) ? (max) : \
      (v) < (min) ? (min) : \
@@ -106,80 +107,15 @@ DEFINE_GUIDSTRUCT("5B722BF8-F0AB-47ee-B9C8-8D61D31375A1", PID_SYSVAD);
 
 #define ALL_CHANNELS_ID             UINT32_MAX
 
-// Flags to identify stream processing mode
-typedef enum {
-    SIGNALPROCESSINGMODE_NONE           = 0x00,
-    SIGNALPROCESSINGMODE_DEFAULT        = 0x01,
-    SIGNALPROCESSINGMODE_RAW            = 0x02,
-    SIGNALPROCESSINGMODE_COMMUNICATIONS = 0x04,
-    SIGNALPROCESSINGMODE_SPEECH         = 0x08,
-    SIGNALPROCESSINGMODE_NOTIFICATION   = 0x10,
-    SIGNALPROCESSINGMODE_MEDIA          = 0x20,
-    SIGNALPROCESSINGMODE_MOVIE          = 0x40
-} SIGNALPROCESSINGMODE;
+// Macros to assist with pin instance counting
+#define VERIFY_PIN_INSTANCE_RESOURCES_AVAILABLE(status, allocated, max) \
+    status = (allocated < max) ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES
 
-#define MAP_GUID_TO_MODE(guid, mode)                                                  \
-    if (IsEqualGUID(guid, AUDIO_SIGNALPROCESSINGMODE_DEFAULT))                        \
-    {                                                                                 \
-        mode = SIGNALPROCESSINGMODE_DEFAULT;                                          \
-    }                                                                                 \
-    else if (IsEqualGUID(guid, AUDIO_SIGNALPROCESSINGMODE_RAW))                       \
-    {                                                                                 \
-        mode = SIGNALPROCESSINGMODE_RAW;                                              \
-    }                                                                                 \
-    else if (IsEqualGUID(guid, AUDIO_SIGNALPROCESSINGMODE_COMMUNICATIONS))            \
-    {                                                                                 \
-        mode = SIGNALPROCESSINGMODE_COMMUNICATIONS;                                   \
-    }                                                                                 \
-    else if (IsEqualGUID(guid, AUDIO_SIGNALPROCESSINGMODE_SPEECH))                    \
-    {                                                                                 \
-        mode = SIGNALPROCESSINGMODE_SPEECH;                                           \
-    }                                                                                 \
-    else if (IsEqualGUID(guid, AUDIO_SIGNALPROCESSINGMODE_NOTIFICATION))              \
-    {                                                                                 \
-        mode = SIGNALPROCESSINGMODE_NOTIFICATION;                                     \
-    }                                                                                 \
-    else if (IsEqualGUID(guid, AUDIO_SIGNALPROCESSINGMODE_MEDIA))                     \
-    {                                                                                 \
-        mode = SIGNALPROCESSINGMODE_MEDIA;                                            \
-    }                                                                                 \
-    else if (IsEqualGUID(guid, AUDIO_SIGNALPROCESSINGMODE_MOVIE))                     \
-    {                                                                                 \
-        mode = SIGNALPROCESSINGMODE_MOVIE;                                            \
-    }                                                                                 \
-    else                                                                              \
-    {                                                                                 \
-        ASSERT(FALSE && "Unknown Signal Processing Mode");                            \
-        mode = SIGNALPROCESSINGMODE_NONE;                                             \
-    }
+#define ALLOCATE_PIN_INSTANCE_RESOURCES(allocated) \
+    allocated++
 
-#define VERIFY_MODE_RESOURCES_AVAILABLE(modes, guid, status)                          \
-    {                                                                                 \
-        SIGNALPROCESSINGMODE mode = SIGNALPROCESSINGMODE_NONE;                        \
-        MAP_GUID_TO_MODE(guid, mode);                                                 \
-        if (SIGNALPROCESSINGMODE_NONE != mode)                                        \
-        {                                                                             \
-            status = (modes & mode) ? STATUS_INSUFFICIENT_RESOURCES : STATUS_SUCCESS; \
-        }                                                                             \
-        else                                                                          \
-        {                                                                             \
-            status = STATUS_INVALID_PARAMETER;                                        \
-        }                                                                             \
-    }
-
-#define ALLOCATE_MODE_RESOURCES(modes, guid)                                          \
-    {                                                                                 \
-        SIGNALPROCESSINGMODE mode = SIGNALPROCESSINGMODE_NONE;                        \
-        MAP_GUID_TO_MODE(guid, mode);                                                 \
-        modes |= mode;                                                                \
-    }
-
-#define FREE_MODE_RESOURCES(modes, guid)                                              \
-    {                                                                                 \
-        SIGNALPROCESSINGMODE mode = SIGNALPROCESSINGMODE_NONE;                        \
-        MAP_GUID_TO_MODE(guid, mode);                                                 \
-        modes &= (~mode);                                                             \
-    }
+#define FREE_PIN_INSTANCE_RESOURCES(allocated) \
+    allocated--
 
 // Define the value data type for supported sound detector patterns. Only
 // one pattern type is supported in this sample.
@@ -243,6 +179,7 @@ typedef struct _PortClassDeviceContext              // 32       64      Byte off
 //
 extern DWORD g_DoNotCreateDataFiles;
 extern DWORD g_DisableBthScoBypass;
+extern UNICODE_STRING g_RegistryPath;
 
 //=============================================================================
 // Function prototypes

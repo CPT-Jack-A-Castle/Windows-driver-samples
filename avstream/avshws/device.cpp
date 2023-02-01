@@ -21,6 +21,145 @@
 **************************************************************************/
 
 #include "avshws.h"
+
+PVOID operator new
+(
+    size_t          iSize,
+    _When_((poolType & NonPagedPoolMustSucceed) != 0,
+       __drv_reportError("Must succeed pool allocations are forbidden. "
+             "Allocation failures cause a system crash"))
+    POOL_TYPE       poolType
+)
+{
+    return ExAllocatePoolZero(poolType,iSize,'wNCK');
+}
+
+PVOID operator new
+(
+    size_t          iSize,
+    _When_((poolType & NonPagedPoolMustSucceed) != 0,
+       __drv_reportError("Must succeed pool allocations are forbidden. "
+             "Allocation failures cause a system crash"))
+    POOL_TYPE       poolType,
+    ULONG           tag
+)
+{
+    return ExAllocatePoolZero(poolType,iSize,tag);
+}
+
+PVOID 
+operator new[](
+    size_t          iSize,
+    _When_((poolType & NonPagedPoolMustSucceed) != 0,
+        __drv_reportError("Must succeed pool allocations are forbidden. "
+            "Allocation failures cause a system crash"))
+    POOL_TYPE       poolType,
+    ULONG           tag
+)
+{
+    return ExAllocatePoolZero(poolType, iSize, tag);
+}
+
+/*++
+
+Routine Description:
+
+    Array delete() operator.
+
+Arguments:
+
+    pVoid -
+        The memory to free.
+
+Return Value:
+
+    None
+
+--*/
+void 
+__cdecl 
+operator delete[](
+    PVOID pVoid
+)
+{
+    if (pVoid)
+    {
+        ExFreePool(pVoid);
+    }
+}
+
+/*++
+
+Routine Description:
+
+    Sized delete() operator.
+
+Arguments:
+
+    pVoid -
+        The memory to free.
+
+    size -
+        The size of the memory to free.
+
+Return Value:
+
+    None
+
+--*/
+void __cdecl operator delete
+(
+    void *pVoid,
+    size_t /*size*/
+)
+{
+    if (pVoid)
+    {
+        ExFreePool(pVoid);
+    }
+}
+
+/*++
+
+Routine Description:
+
+    Sized delete[]() operator.
+
+Arguments:
+
+    pVoid -
+        The memory to free.
+
+    size -
+        The size of the memory to free.
+
+Return Value:
+
+    None
+
+--*/
+void __cdecl operator delete[]
+(
+    void *pVoid,
+    size_t /*size*/
+)
+{
+    if (pVoid)
+    {
+        ExFreePool(pVoid);
+    }
+}
+
+void __cdecl operator delete
+(
+    PVOID pVoid
+    )
+{
+    if (pVoid) {
+        ExFreePool(pVoid);
+    }
+}
+
 /**************************************************************************
 
     PAGEABLE CODE
@@ -185,88 +324,6 @@ Return Value:
                 delete m_HardwareSimulation;
             }
         }
-#if defined(_X86_)
-        //
-        // DMA operations illustrated in this sample are applicable only for 32bit platform.
-        //
-        INTERFACE_TYPE InterfaceBuffer;
-        ULONG InterfaceLength;
-        DEVICE_DESCRIPTION DeviceDescription;
-
-        if (NT_SUCCESS (Status)) {
-            //
-            // Set up DMA...
-            //
-            // Ordinarilly, we'd be using InterfaceBuffer or 
-            // InterfaceTypeUndefined if !NT_SUCCESS (IfStatus) as the 
-            // InterfaceType below; however, for the purposes of this sample, 
-            // we lie and say we're on the PCI Bus.  Otherwise, we're using map
-            // registers on x86 32 bit physical to 32 bit logical and this isn't
-            // what I want to show in this sample.
-            //
-            //
-            // NTSTATUS IfStatus = 
-
-            IoGetDeviceProperty (
-                m_Device -> PhysicalDeviceObject,
-                DevicePropertyLegacyBusType,
-                sizeof (INTERFACE_TYPE),
-                &InterfaceBuffer,
-                &InterfaceLength
-                );
-
-            //
-            // Initialize our fake device description.  We claim to be a 
-            // bus-mastering 32-bit scatter/gather capable piece of hardware.
-            //
-            DeviceDescription.Version = DEVICE_DESCRIPTION_VERSION;
-            DeviceDescription.DmaChannel = ((ULONG) ~0);
-            DeviceDescription.InterfaceType = PCIBus;
-            DeviceDescription.DmaWidth = Width32Bits;
-            DeviceDescription.DmaSpeed = Compatible;
-            DeviceDescription.ScatterGather = TRUE;
-            DeviceDescription.Master = TRUE;
-            DeviceDescription.Dma32BitAddresses = TRUE;
-            DeviceDescription.AutoInitialize = FALSE;
-            DeviceDescription.MaximumLength = (ULONG) -1;
-    
-            //
-            // Get a DMA adapter object from the system.
-            //
-            m_DmaAdapterObject = IoGetDmaAdapter (
-                m_Device -> PhysicalDeviceObject,
-                &DeviceDescription,
-                &m_NumberOfMapRegisters
-                );
-    
-            if (!m_DmaAdapterObject) {
-                Status = STATUS_UNSUCCESSFUL;
-            }
-    
-        }
-    
-        if (NT_SUCCESS (Status)) {
-            //
-            // Initialize our DMA adapter object with AVStream.  This is 
-            // **ONLY** necessary **IF** you are doing DMA directly into
-            // capture buffers as this sample does.  For this,
-            // KSPIN_FLAG_GENERATE_MAPPINGS must be specified on a queue.
-            //
-    
-            //
-            // The (1 << 20) below is the maximum size of a single s/g mapping
-            // that this hardware can handle.  Note that I have pulled this
-            // number out of thin air for the "fake" hardware.
-            //
-            KsDeviceRegisterAdapterObject (
-                m_Device,
-                m_DmaAdapterObject,
-                (1 << 20),
-                sizeof (KSMAPPING)
-                );
-    
-        }
-#endif
     }
     
     return Status;

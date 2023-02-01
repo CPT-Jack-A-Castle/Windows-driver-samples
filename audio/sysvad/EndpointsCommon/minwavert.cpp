@@ -16,6 +16,7 @@ Abstract:
 
 #include <sysvad.h>
 #include <limits.h>
+#include <MsApoFxProxy.h>
 #include "ContosoKeywordDetector.h"
 #include "SysVadShared.h"
 #include "simple.h"
@@ -24,6 +25,8 @@ Abstract:
 #include "IHVPrivatePropertySet.h"
 #include "AudioModuleHelper.h"
 
+
+#define EFFECTS_LIST_COUNT 2
 
 //=============================================================================
 // CMiniportWaveRT
@@ -37,10 +40,7 @@ CreateMiniportWaveRTSYSVAD
     _Out_           PUNKNOWN                              * Unknown,
     _In_            REFCLSID,
     _In_opt_        PUNKNOWN                                UnknownOuter,
-    _When_((PoolType & NonPagedPoolMustSucceed) != 0,
-       __drv_reportError("Must succeed pool allocations are forbidden. "
-        "Allocation failures cause a system crash"))
-    _In_            POOL_TYPE                               PoolType,
+    _In_            POOL_FLAGS                              PoolFlags,
     _In_            PUNKNOWN                                UnknownAdapter,
     _In_opt_        PVOID                                   DeviceContext,
     _In_            PENDPOINT_MINIPAIR                      MiniportPair
@@ -80,7 +80,7 @@ Return Value:
     ASSERT(Unknown);
     ASSERT(MiniportPair);
 
-    CMiniportWaveRT *obj = new (PoolType, MINWAVERT_POOLTAG) CMiniportWaveRT
+    CMiniportWaveRT *obj = new (PoolFlags, MINWAVERT_POOLTAG) CMiniportWaveRT
                                                              (
                                                                 UnknownAdapter,
                                                                 MiniportPair,
@@ -193,12 +193,13 @@ Return Value:
         m_pAudioModules = NULL;
     }
 
-#ifdef SYSVAD_BTH_BYPASS
-    if (IsBthHfpDevice())
+#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND)
+    if (IsSidebandDevice())
     {
-        SAFE_RELEASE(m_BthHfpDevice);
+        m_pSidebandDevice->SetFormatChangeHandler(m_DeviceType, NULL, NULL);
+        SAFE_RELEASE(m_pSidebandDevice);
     }
-#endif // SYSVAD_BTH_BYPASS
+#endif // defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND)
 
 } // ~CMiniportWaveRT
 
@@ -387,23 +388,21 @@ Return Value:
     //
     // Init class data members
     //
-    m_ulLoopbackAllocated           = 0;
-    m_ulSystemAllocated             = 0;
-    m_ulOffloadAllocated            = 0;
-    m_dwCaptureAllocatedModes       = 0;
-    m_dwBiDiCaptureAllocatedModes   = 0;
-    m_dwSystemAllocatedModes        = 0;
-    m_SystemStreams                 = NULL;
-    m_OffloadStreams                = NULL;
-    m_LoopbackStreams               = NULL;
-    m_bGfxEnabled                   = FALSE;
-    m_pbMuted                       = NULL;
-    m_plVolumeLevel                 = NULL;
-    m_plPeakMeter                   = NULL;
-    m_pMixFormat                    = NULL;
-    m_pDeviceFormat                 = NULL;
-    m_ulMixDrmContentId             = 0;
-    m_LoopbackProtection            = CONSTRICTOR_OPTION_DISABLE;
+    m_ulLoopbackAllocated               = 0;
+    m_ulSystemAllocated                 = 0;
+    m_ulOffloadAllocated                = 0;
+    m_ulKeywordDetectorAllocated        = 0;
+    m_SystemStreams                     = NULL;
+    m_OffloadStreams                    = NULL;
+    m_LoopbackStreams                   = NULL;
+    m_bGfxEnabled                       = FALSE;
+    m_pbMuted                           = NULL;
+    m_plVolumeLevel                     = NULL;
+    m_plPeakMeter                       = NULL;
+    m_pMixFormat                        = NULL;
+    m_pDeviceFormat                     = NULL;
+    m_ulMixDrmContentId                 = 0;
+    m_LoopbackProtection                = CONSTRICTOR_OPTION_DISABLE;
     RtlZeroMemory(&m_MixDrmRights, sizeof(m_MixDrmRights));
 
     // 
@@ -424,12 +423,11 @@ Return Value:
         // Module list size.
         //
         size = cModules * sizeof(AUDIOMODULE);
-        m_pAudioModules = (AUDIOMODULE *)ExAllocatePoolWithTag(NonPagedPoolNx, size, MINWAVERT_POOLTAG);
+        m_pAudioModules = (AUDIOMODULE *)ExAllocatePool2(POOL_FLAG_NON_PAGED, size, MINWAVERT_POOLTAG);
         if (m_pAudioModules == NULL)
         {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        RtlZeroMemory(m_pAudioModules, size);
 
         for (ULONG i=0; i<cModules; ++i)
         {
@@ -449,13 +447,12 @@ Return Value:
             if (size)
             {
                 m_pAudioModules[i].Context = 
-                    ExAllocatePoolWithTag(NonPagedPoolNx, size, MINWAVERT_POOLTAG);
+                    ExAllocatePool2(POOL_FLAG_NON_PAGED, size, MINWAVERT_POOLTAG);
                 
                 if (m_pAudioModules[i].Context == NULL)
                 {
                     return STATUS_INSUFFICIENT_RESOURCES;
                 }
-                RtlZeroMemory(m_pAudioModules[i].Context, size);
             }
 
             
@@ -485,32 +482,35 @@ Return Value:
     //
     if (IsRenderDevice())
     {
-        // Basic validation
-        if (m_ulMaxSystemStreams == 0 ||
-            m_ulMaxLoopbackStreams == 0)
+        if (m_ulMaxSystemStreams == 0 )
         {
             return STATUS_INVALID_DEVICE_STATE;
         }
             
         // System streams.
         size = sizeof(PCMiniportWaveRTStream) * m_ulMaxSystemStreams;
-        m_SystemStreams = (PCMiniportWaveRTStream *)ExAllocatePoolWithTag(NonPagedPoolNx, size, MINWAVERT_POOLTAG);
+        m_SystemStreams = (PCMiniportWaveRTStream *)ExAllocatePool2(POOL_FLAG_NON_PAGED, size, MINWAVERT_POOLTAG);
         if (m_SystemStreams == NULL)
         {
             return STATUS_INSUFFICIENT_RESOURCES;
         }
-        RtlZeroMemory(m_SystemStreams, size);
 
-        // Loopback streams.
-        size = sizeof(PCMiniportWaveRTStream) * m_ulMaxLoopbackStreams;
-        m_LoopbackStreams = (PCMiniportWaveRTStream *)ExAllocatePoolWithTag(NonPagedPoolNx, size, MINWAVERT_POOLTAG);
-        if (m_LoopbackStreams == NULL)
+        if (IsLoopbackSupported())
         {
-            return STATUS_INSUFFICIENT_RESOURCES;
-        }
-        RtlZeroMemory(m_LoopbackStreams, size);
+            if (m_ulMaxLoopbackStreams == 0)
+            {
+                return STATUS_INVALID_DEVICE_STATE;
+            }
 
-        // Basic validation
+            // Loopback streams.
+            size = sizeof(PCMiniportWaveRTStream) * m_ulMaxLoopbackStreams;
+            m_LoopbackStreams = (PCMiniportWaveRTStream *)ExAllocatePool2(POOL_FLAG_NON_PAGED, size, MINWAVERT_POOLTAG);
+            if (m_LoopbackStreams == NULL)
+            {
+                return STATUS_INSUFFICIENT_RESOURCES;
+            }
+        }
+
         if (IsOffloadSupported())
         {
             PKSDATAFORMAT_WAVEFORMATEXTENSIBLE pDeviceFormats;
@@ -523,15 +523,14 @@ Return Value:
             
             // Offload streams.
             size = sizeof(PCMiniportWaveRTStream) * m_ulMaxOffloadStreams;
-            m_OffloadStreams = (PCMiniportWaveRTStream *)ExAllocatePoolWithTag(NonPagedPoolNx, size, MINWAVERT_POOLTAG);
+            m_OffloadStreams = (PCMiniportWaveRTStream *)ExAllocatePool2(POOL_FLAG_NON_PAGED, size, MINWAVERT_POOLTAG);
             if (m_OffloadStreams == NULL)
             {
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            RtlZeroMemory(m_OffloadStreams, size);
 
             // Formats. 
-            m_pDeviceFormat = (PKSDATAFORMAT_WAVEFORMATEXTENSIBLE)ExAllocatePoolWithTag(NonPagedPoolNx, sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE), MINWAVERT_POOLTAG);
+            m_pDeviceFormat = (PKSDATAFORMAT_WAVEFORMATEXTENSIBLE)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE), MINWAVERT_POOLTAG);
             if (m_pDeviceFormat == NULL)
             {
                 return STATUS_INSUFFICIENT_RESOURCES;
@@ -545,7 +544,7 @@ Return Value:
             }
             RtlCopyMemory((PVOID)(m_pDeviceFormat), (PVOID)(pDeviceFormats), sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE));
 
-            m_pMixFormat = (PKSDATAFORMAT_WAVEFORMATEXTENSIBLE)ExAllocatePoolWithTag(NonPagedPoolNx, sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE), MINWAVERT_POOLTAG);
+            m_pMixFormat = (PKSDATAFORMAT_WAVEFORMATEXTENSIBLE)ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(KSDATAFORMAT_WAVEFORMATEXTENSIBLE), MINWAVERT_POOLTAG);
             if (m_pMixFormat == NULL)
             {
                 return STATUS_INSUFFICIENT_RESOURCES;
@@ -570,26 +569,23 @@ Return Value:
 
             m_bGfxEnabled = FALSE;
 
-            m_pbMuted = (PBOOL)ExAllocatePoolWithTag(NonPagedPoolNx, m_DeviceMaxChannels * sizeof(BOOL), MINWAVERT_POOLTAG);
+            m_pbMuted = (PBOOL)ExAllocatePool2(POOL_FLAG_NON_PAGED, m_DeviceMaxChannels * sizeof(BOOL), MINWAVERT_POOLTAG);
             if (m_pbMuted == NULL)
             {
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            RtlZeroMemory(m_pbMuted, m_DeviceMaxChannels * sizeof(BOOL));
 
-            m_plVolumeLevel = (PLONG)ExAllocatePoolWithTag(NonPagedPoolNx, m_DeviceMaxChannels * sizeof(LONG), MINWAVERT_POOLTAG);
+            m_plVolumeLevel = (PLONG)ExAllocatePool2(POOL_FLAG_NON_PAGED, m_DeviceMaxChannels * sizeof(LONG), MINWAVERT_POOLTAG);
             if (m_plVolumeLevel == NULL)
             {
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            RtlZeroMemory(m_plVolumeLevel, m_DeviceMaxChannels * sizeof(LONG));
 
-            m_plPeakMeter = (PLONG)ExAllocatePoolWithTag(NonPagedPoolNx, m_DeviceMaxChannels * sizeof(LONG), MINWAVERT_POOLTAG);
+            m_plPeakMeter = (PLONG)ExAllocatePool2(POOL_FLAG_NON_PAGED, m_DeviceMaxChannels * sizeof(LONG), MINWAVERT_POOLTAG);
             if (m_plPeakMeter == NULL)
             {
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
-            RtlZeroMemory(m_plPeakMeter, m_DeviceMaxChannels * sizeof(LONG));
         }
         
         // 
@@ -608,6 +604,25 @@ Return Value:
     {
         m_pPortEvents = NULL;
     }
+    
+    // Format change handler is only required for bluetooth HFP implementation
+#ifdef SYSVAD_BTH_BYPASS
+    if (IsSidebandDevice())
+    {
+        PSIDEBANDDEVICECOMMON sidebandDevice = NULL;
+        
+        sidebandDevice = GetSidebandDevice(); // weak ref.
+        ASSERT(sidebandDevice != NULL);
+        
+        //
+        // Register with BthHfpDevice to get notification events.
+        //
+        sidebandDevice->SetFormatChangeHandler(
+            m_DeviceType,
+            EvtFormatChangeHandler,             // handler
+            PCMiniportWaveRT(this));            // context.
+    }
+#endif  // #ifdef SYSVAD_BTH_BYPASS
 
     return ntStatus;
 } // Init
@@ -676,7 +691,7 @@ Return Value:
     //
     if (NT_SUCCESS(ntStatus))
     {
-        ntStatus = ValidateStreamCreate(Pin, Capture, signalProcessingMode);
+        ntStatus = ValidateStreamCreate(Pin, Capture);
     }
 
     // Determine if the format is valid.
@@ -691,7 +706,7 @@ Return Value:
     //
     if (NT_SUCCESS(ntStatus))
     {
-        stream = new (NonPagedPoolNx, MINWAVERT_POOLTAG) 
+        stream = new (POOL_FLAG_NON_PAGED, MINWAVERT_POOLTAG) 
             CMiniportWaveRTStream(NULL);
 
         if (stream)
@@ -911,8 +926,7 @@ NTSTATUS
 CMiniportWaveRT::ValidateStreamCreate
 (
     _In_    ULONG   _Pin,
-    _In_    BOOLEAN _Capture,
-    _In_    GUID    _SignalProcessingMode
+    _In_    BOOLEAN _Capture
 )
 {
     PAGED_CODE();
@@ -925,49 +939,270 @@ CMiniportWaveRT::ValidateStreamCreate
     {
         if (IsLoopbackPin(_Pin))
         {
-            if (m_ulLoopbackAllocated < m_ulMaxLoopbackStreams)
-            {
-                ntStatus = STATUS_SUCCESS;
-            }
-            else 
-            {
-                ntStatus = STATUS_INSUFFICIENT_RESOURCES;
-            }
+            VERIFY_PIN_INSTANCE_RESOURCES_AVAILABLE(ntStatus, m_ulLoopbackAllocated, m_ulMaxLoopbackStreams);
         }
-        else if (IsSystemCapturePin(_Pin))
+        else if (IsSystemCapturePin(_Pin) || IsCellularBiDiCapturePin(_Pin))
         {
-            VERIFY_MODE_RESOURCES_AVAILABLE(m_dwCaptureAllocatedModes, _SignalProcessingMode, ntStatus)
+            VERIFY_PIN_INSTANCE_RESOURCES_AVAILABLE(ntStatus, m_ulSystemAllocated, m_ulMaxSystemStreams);
         }
-        else if (IsCellularBiDiCapturePin(_Pin))
+        else if (IsKeywordDetectorPin(_Pin))
         {
-            VERIFY_MODE_RESOURCES_AVAILABLE(m_dwBiDiCaptureAllocatedModes, _SignalProcessingMode, ntStatus)
-        }
-        else if (m_DeviceFormatsAndModes[_Pin].PinType == PINTYPE::KeywordCapturePin)
-        {
-            ntStatus = STATUS_SUCCESS;
+            VERIFY_PIN_INSTANCE_RESOURCES_AVAILABLE(ntStatus, m_ulKeywordDetectorAllocated, m_ulMaxKeywordDetectorStreams);
         }
     }
     else
     {
         if (IsSystemRenderPin(_Pin))
         {
-            VERIFY_MODE_RESOURCES_AVAILABLE(m_dwSystemAllocatedModes, _SignalProcessingMode, ntStatus)
+            VERIFY_PIN_INSTANCE_RESOURCES_AVAILABLE(ntStatus, m_ulSystemAllocated, m_ulMaxSystemStreams);
         }
         else if (IsOffloadPin(_Pin))
         {
-            if (m_ulOffloadAllocated < m_ulMaxOffloadStreams)
-            {
-                ntStatus = STATUS_SUCCESS;
-            }
-            else
-            {
-                ntStatus = STATUS_INSUFFICIENT_RESOURCES;
-            }
+            VERIFY_PIN_INSTANCE_RESOURCES_AVAILABLE(ntStatus, m_ulOffloadAllocated, m_ulMaxOffloadStreams);
         }
     }
 
     return ntStatus;
 }
+
+//=============================================================================
+#pragma code_seg()
+_Use_decl_annotations_
+VOID CMiniportWaveRT::AcquireFormatsAndModesLock()
+{
+    KeAcquireSpinLock(&m_DeviceFormatsAndModesLock, &m_DeviceFormatsAndModesIrql);
+}
+
+#pragma code_seg()
+_Use_decl_annotations_
+VOID CMiniportWaveRT::ReleaseFormatsAndModesLock()
+{
+    KeReleaseSpinLock(&m_DeviceFormatsAndModesLock, m_DeviceFormatsAndModesIrql);
+}
+
+//---------------------------------------------------------------------------
+// GetPinSupportedDeviceFormats 
+//
+//  Return supported formats for a given pin.
+//
+//  Return value
+//      The number of KSDATAFORMAT_WAVEFORMATEXTENSIBLE items.
+//
+//  Remarks
+//      Supported formats index array follows same order as filter's pin
+//      descriptor list.
+//
+#pragma code_seg()
+_Use_decl_annotations_
+ULONG CMiniportWaveRT::GetPinSupportedDeviceFormats(_In_ ULONG PinId, _Outptr_opt_result_buffer_(return) KSDATAFORMAT_WAVEFORMATEXTENSIBLE **ppFormats)
+{
+    PPIN_DEVICE_FORMATS_AND_MODES pDeviceFormatsAndModes = NULL;
+
+    AcquireFormatsAndModesLock();
+
+    pDeviceFormatsAndModes = m_DeviceFormatsAndModes;
+    ASSERT(m_DeviceFormatsAndModesCount > PinId);
+    ASSERT(pDeviceFormatsAndModes[PinId].WaveFormats != NULL);
+    ASSERT(pDeviceFormatsAndModes[PinId].WaveFormatsCount > 0);
+
+    if (ppFormats != NULL)
+    {
+        *ppFormats = pDeviceFormatsAndModes[PinId].WaveFormats;
+    }
+
+    ReleaseFormatsAndModesLock();
+
+    return pDeviceFormatsAndModes[PinId].WaveFormatsCount;
+}
+
+//---------------------------------------------------------------------------
+// GetAudioEngineSupportedDeviceFormats 
+//
+//  Return supported device formats for the audio engine node.
+//
+//  Return value
+//      The number of KSDATAFORMAT_WAVEFORMATEXTENSIBLE items.
+//
+//  Remarks
+//      Supported formats index array follows same order as filter's pin
+//      descriptor list. This routine assumes the engine formats are the
+//      last item in the filter's array of PIN_DEVICE_FORMATS_AND_MODES.
+//
+#pragma code_seg()
+_Use_decl_annotations_
+ULONG CMiniportWaveRT::GetAudioEngineSupportedDeviceFormats(_Outptr_opt_result_buffer_(return) KSDATAFORMAT_WAVEFORMATEXTENSIBLE **ppFormats)
+{
+    ULONG i;
+    PPIN_DEVICE_FORMATS_AND_MODES pDeviceFormatsAndModes = NULL;
+
+    AcquireFormatsAndModesLock();
+
+    pDeviceFormatsAndModes = m_DeviceFormatsAndModes;
+
+    // By convention, the audio engine node's device formats are the last
+    // entry in the PIN_DEVICE_FORMATS_AND_MODES list.
+
+    // Since this endpoint apparently supports offload, there must be at least a system,
+    // offload, and loopback pin, plus the entry for the device formats.
+    ASSERT(m_DeviceFormatsAndModesCount > 3);
+
+    i = m_DeviceFormatsAndModesCount - 1;                       // Index of last list entry
+
+    ASSERT(pDeviceFormatsAndModes[i].PinType == NoPin);
+    ASSERT(pDeviceFormatsAndModes[i].WaveFormats != NULL);
+    ASSERT(pDeviceFormatsAndModes[i].WaveFormatsCount > 0);
+
+    if (ppFormats != NULL)
+    {
+        *ppFormats = pDeviceFormatsAndModes[i].WaveFormats;
+    }
+
+    ReleaseFormatsAndModesLock();
+    return pDeviceFormatsAndModes[i].WaveFormatsCount;
+}
+
+//---------------------------------------------------------------------------
+// GetPinSupportedDeviceModes 
+//
+//  Return mode information for a given pin.
+//
+//  Return value
+//      The number of MODE_AND_DEFAULT_FORMAT items or 0 if none.
+//
+//  Remarks
+//      Supported formats index array follows same order as filter's pin
+//      descriptor list.
+//
+#pragma code_seg()
+_Use_decl_annotations_
+ULONG CMiniportWaveRT::GetPinSupportedDeviceModes(_In_ ULONG PinId, _Outptr_opt_result_buffer_(return) _On_failure_(_Deref_post_null_) MODE_AND_DEFAULT_FORMAT **ppModes)
+{
+    PMODE_AND_DEFAULT_FORMAT modes;
+    ULONG numModes;
+
+    AcquireFormatsAndModesLock();
+
+    ASSERT(m_DeviceFormatsAndModesCount > PinId);
+    ASSERT((m_DeviceFormatsAndModes[PinId].ModeAndDefaultFormatCount == 0) == (m_DeviceFormatsAndModes[PinId].ModeAndDefaultFormat == NULL));
+
+    modes = m_DeviceFormatsAndModes[PinId].ModeAndDefaultFormat;
+    numModes = m_DeviceFormatsAndModes[PinId].ModeAndDefaultFormatCount;
+
+#ifdef SYSVAD_BTH_BYPASS
+    // Special handling for the SCO bypass endpoint, whose modes are determined at runtime
+    if (m_DeviceType == eBthHfpMicDevice)
+    {
+        ASSERT(m_pSidebandDevice != NULL);
+        if (m_pSidebandDevice->IsNRECSupported())
+        {
+            modes = BthHfpMicPinSupportedDeviceModesNrec;
+            numModes = ARRAYSIZE(BthHfpMicPinSupportedDeviceModesNrec);
+        }
+        else
+        {
+            modes = BthHfpMicPinSupportedDeviceModesNoNrec;
+            numModes = ARRAYSIZE(BthHfpMicPinSupportedDeviceModesNoNrec);
+        }
+    }
+#endif // SYSVAD_BTH_BYPASS
+
+    if (ppModes != NULL)
+    {
+        if (numModes > 0)
+        {
+            *ppModes = modes;
+        }
+        else
+        {
+            // ensure that the returned pointer is NULL
+            // in the event of failure (SAL annotation above
+            // indicates that it must be NULL, and OACR sees a possibility
+            // that it might not be).
+            *ppModes = NULL;
+        }
+    }
+
+    ReleaseFormatsAndModesLock();
+    return numModes;
+}
+
+#pragma code_seg()
+BOOL CMiniportWaveRT::IsSystemCapturePin(ULONG nPinId)
+{
+    AcquireFormatsAndModesLock();
+
+    PINTYPE pinType = m_DeviceFormatsAndModes[nPinId].PinType;
+
+    ReleaseFormatsAndModesLock();
+    return (pinType == SystemCapturePin);
+}
+
+#pragma code_seg()
+BOOL CMiniportWaveRT::IsCellularBiDiCapturePin(ULONG nPinId)
+{
+    AcquireFormatsAndModesLock();
+
+    PINTYPE pinType = m_DeviceFormatsAndModes[nPinId].PinType;
+
+    ReleaseFormatsAndModesLock();
+    return (pinType == TelephonyBidiPin);
+}
+
+#pragma code_seg()
+BOOL CMiniportWaveRT::IsSystemRenderPin(ULONG nPinId)
+{
+    AcquireFormatsAndModesLock();
+
+    PINTYPE pinType = m_DeviceFormatsAndModes[nPinId].PinType;
+
+    ReleaseFormatsAndModesLock();
+    return (pinType == SystemRenderPin);
+}
+
+#pragma code_seg()
+BOOL CMiniportWaveRT::IsLoopbackPin(ULONG nPinId)
+{
+    AcquireFormatsAndModesLock();
+
+    PINTYPE pinType = m_DeviceFormatsAndModes[nPinId].PinType;
+
+    ReleaseFormatsAndModesLock();
+    return (pinType == RenderLoopbackPin);
+}
+
+#pragma code_seg()
+BOOL CMiniportWaveRT::IsOffloadPin(ULONG nPinId)
+{
+    AcquireFormatsAndModesLock();
+
+    PINTYPE pinType = m_DeviceFormatsAndModes[nPinId].PinType;
+
+    ReleaseFormatsAndModesLock();
+    return (pinType == OffloadRenderPin);
+}
+
+#pragma code_seg()
+BOOL CMiniportWaveRT::IsBridgePin(ULONG nPinId)
+{
+    AcquireFormatsAndModesLock();
+
+    PINTYPE pinType = m_DeviceFormatsAndModes[nPinId].PinType;
+
+    ReleaseFormatsAndModesLock();
+    return (pinType == BridgePin);
+}
+
+#pragma code_seg()
+BOOL CMiniportWaveRT::IsKeywordDetectorPin(ULONG nPinId)
+{
+    AcquireFormatsAndModesLock();
+
+    PINTYPE pinType = m_DeviceFormatsAndModes[nPinId].PinType;
+
+    ReleaseFormatsAndModesLock();
+    return (pinType == KeywordCapturePin);
+}
+
 
 //=============================================================================
 #pragma code_seg("PAGE")
@@ -983,35 +1218,34 @@ CMiniportWaveRT::StreamCreated
     PCMiniportWaveRTStream * streams        = NULL;
     ULONG                    count          = 0;
     
-    DPF_ENTER(("[CMiniportWaveRT::StreamOpened]"));
+    DPF_ENTER(("[CMiniportWaveRT::StreamCreated]"));
     
-    if (IsSystemCapturePin(_Pin))
+    if (IsSystemCapturePin(_Pin) || IsCellularBiDiCapturePin(_Pin))
     {
-        ALLOCATE_MODE_RESOURCES(m_dwCaptureAllocatedModes, _Stream->GetSignalProcessingMode())
+        ALLOCATE_PIN_INSTANCE_RESOURCES(m_ulSystemAllocated);
         return STATUS_SUCCESS;
     }
-    if (IsCellularBiDiCapturePin(_Pin))
+    if (IsKeywordDetectorPin(_Pin))
     {
-        ALLOCATE_MODE_RESOURCES(m_dwBiDiCaptureAllocatedModes, _Stream->GetSignalProcessingMode())
+        ALLOCATE_PIN_INSTANCE_RESOURCES(m_ulKeywordDetectorAllocated);
         return STATUS_SUCCESS;
     }
     else if (IsLoopbackPin(_Pin))
     {
-        m_ulLoopbackAllocated++;
+        ALLOCATE_PIN_INSTANCE_RESOURCES(m_ulLoopbackAllocated);
         streams = m_LoopbackStreams;
         count = m_ulMaxLoopbackStreams;
         _Stream->m_SaveData.Disable(m_MixDrmRights.CopyProtect);
     }
     else if (IsSystemRenderPin(_Pin))
     {
-        ALLOCATE_MODE_RESOURCES(m_dwSystemAllocatedModes, _Stream->GetSignalProcessingMode())
-        m_ulSystemAllocated++;
+        ALLOCATE_PIN_INSTANCE_RESOURCES(m_ulSystemAllocated);
         streams = m_SystemStreams;
         count = m_ulMaxSystemStreams;
     }
     else if (IsOffloadPin(_Pin))
     {
-        m_ulOffloadAllocated++;
+        ALLOCATE_PIN_INSTANCE_RESOURCES(m_ulOffloadAllocated);
         streams = m_OffloadStreams;
         count = m_ulMaxOffloadStreams;
     }
@@ -1053,33 +1287,32 @@ CMiniportWaveRT::StreamClosed
 
     DPF_ENTER(("[CMiniportWaveRT::StreamClosed]"));
 
-    if (IsSystemCapturePin(_Pin))
+    if (IsSystemCapturePin(_Pin) || IsCellularBiDiCapturePin(_Pin))
     {
-        FREE_MODE_RESOURCES(m_dwCaptureAllocatedModes, _Stream->GetSignalProcessingMode())
+        FREE_PIN_INSTANCE_RESOURCES(m_ulSystemAllocated);
         return STATUS_SUCCESS;
     }
-    if (IsCellularBiDiCapturePin(_Pin))
+    if (IsKeywordDetectorPin(_Pin))
     {
-        FREE_MODE_RESOURCES(m_dwBiDiCaptureAllocatedModes, _Stream->GetSignalProcessingMode())
+        FREE_PIN_INSTANCE_RESOURCES(m_ulKeywordDetectorAllocated);
         return STATUS_SUCCESS;
     }
     else if (IsLoopbackPin(_Pin))
     {
-        m_ulLoopbackAllocated--;
+        FREE_PIN_INSTANCE_RESOURCES(m_ulLoopbackAllocated);
         streams = m_LoopbackStreams;
         count = m_ulMaxLoopbackStreams;
     }
     else if (IsSystemRenderPin(_Pin))
     {
-        FREE_MODE_RESOURCES(m_dwSystemAllocatedModes, _Stream->GetSignalProcessingMode())
-        m_ulSystemAllocated--;
+        FREE_PIN_INSTANCE_RESOURCES(m_ulSystemAllocated);
         streams = m_SystemStreams;
         count = m_ulMaxSystemStreams;
         updateDrmRights = true;
     }
     else if (IsOffloadPin(_Pin))
     {
-        m_ulOffloadAllocated--;
+        FREE_PIN_INSTANCE_RESOURCES(m_ulOffloadAllocated);
         streams = m_OffloadStreams;
         count = m_ulMaxOffloadStreams;
         updateDrmRights = true;
@@ -1278,7 +1511,74 @@ CMiniportWaveRT::IsFormatSupported
     }
 
     return ntStatus;
-}    
+}
+
+#ifdef SYSVAD_BTH_BYPASS
+//=============================================================================
+#pragma code_seg()
+VOID
+CMiniportWaveRT::EvtFormatChangeHandler
+(
+    _In_opt_    PVOID   Context
+)
+{
+    DPF_ENTER(("[CMiniportWaveRT::EvtFormatChangeHandler]"));
+
+    PCMiniportWaveRT This = PCMiniportWaveRT(Context);
+    if (This == NULL)
+    {
+        DPF(D_ERROR, ("EvtFormatChangeHandler: context is null")); 
+        return;
+    }
+
+    /*
+    _In_opt_    GUID   *Set,
+    _In_        ULONG   EventId,
+    _In_        BOOL    PinEvent,
+    _In_        ULONG   PinId,
+    _In_        BOOL    NodeEvent,
+    _In_        ULONG   NodeId
+    */
+
+    if (This->IsSidebandDevice())
+    {
+        if (This->m_DeviceType == eBthHfpMicDevice)
+        {
+            // swap the device formats and modes for bt
+            This->AcquireFormatsAndModesLock();
+
+            This->m_DeviceFormatsAndModes = This->m_pSidebandDevice->GetFormatsAndModes(This->m_DeviceType);
+
+            This->ReleaseFormatsAndModesLock();
+
+            This->GenerateEventList(
+                (GUID*)&KSEVENTSETID_PinCapsChange,
+                KSEVENT_PINCAPS_FORMATCHANGE,
+                TRUE,
+                1,
+                FALSE,
+                ULONG(-1));
+        }
+        else if(This->m_DeviceType == eBthHfpSpeakerDevice)
+        {
+            // swap the device formats and modes for bt
+            This->AcquireFormatsAndModesLock();
+
+            This->m_DeviceFormatsAndModes = This->m_pSidebandDevice->GetFormatsAndModes(This->m_DeviceType);
+
+            This->ReleaseFormatsAndModesLock();
+
+            This->GenerateEventList(
+                (GUID*)&KSEVENTSETID_PinCapsChange,
+                KSEVENT_PINCAPS_FORMATCHANGE,
+                TRUE,
+                0,
+                FALSE,
+                ULONG(-1));
+        }
+    }
+}
+#endif  // #ifdef SYSVAD_BTH_BYPASS
 
 //=============================================================================
 #pragma code_seg("PAGE")
@@ -1314,7 +1614,8 @@ CMiniportWaveRT::PropertyHandlerProposedFormat
     if (IsSystemRenderPin(kspPin->PinId) ||
         IsLoopbackPin(kspPin->PinId) ||
         IsOffloadPin(kspPin->PinId) ||
-        IsSystemCapturePin(kspPin->PinId)||
+        IsSystemCapturePin(kspPin->PinId) ||
+        IsKeywordDetectorPin(kspPin->PinId) ||
         IsCellularBiDiCapturePin(kspPin->PinId))
     {
         ntStatus = STATUS_SUCCESS;
@@ -1354,33 +1655,315 @@ CMiniportWaveRT::PropertyHandlerProposedFormat
         return STATUS_BUFFER_TOO_SMALL;
     }
 
+#if 0
     // Only SET is supported for this property
     if ((PropertyRequest->Verb & KSPROPERTY_TYPE_SET) == 0)
     {
         return STATUS_INVALID_DEVICE_REQUEST;
     }
+#endif
 
-    pKsFormat = (PKSDATAFORMAT)PropertyRequest->Value;
-    ntStatus = IsFormatSupported(kspPin->PinId, 
-                                 IsSystemCapturePin(kspPin->PinId) || IsCellularBiDiCapturePin(kspPin->PinId) || 
-                                    IsLoopbackPin(kspPin->PinId),
-                                 pKsFormat);
-    if (!NT_SUCCESS(ntStatus))
+    if (PropertyRequest->Verb & KSPROPERTY_TYPE_GET)
     {
-        return ntStatus;
+        ntStatus = STATUS_INVALID_DEVICE_REQUEST;
+#if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND)
+        if (IsSidebandDevice())
+        {
+            if (m_DeviceType == eBthHfpMicDevice ||
+                m_DeviceType == eBthHfpSpeakerDevice ||
+                m_DeviceType == eUsbHsSpeakerDevice ||
+                m_DeviceType == eUsbHsMicDevice)
+            {
+                KSDATAFORMAT_WAVEFORMATEXTENSIBLE *propFormat = (KSDATAFORMAT_WAVEFORMATEXTENSIBLE *)PropertyRequest->Value;
+                ULONG numModes = 0;
+                MODE_AND_DEFAULT_FORMAT *modeInfo = NULL;
+                MODE_AND_DEFAULT_FORMAT *modeInfo_RAW = NULL;
+                numModes = GetPinSupportedDeviceModes(kspPin->PinId, &modeInfo);
+                BOOL bFound = FALSE;
+                ULONG i = 0;
+
+                // For loopback pin, get default format from host pin structures
+                if (IsLoopbackPin(kspPin->PinId))
+                {
+                    for (i = 0; i < m_DeviceFormatsAndModesCount; i++)
+                    {
+                        if (m_DeviceFormatsAndModes[i].PinType == SystemRenderPin)
+                        {
+                            modeInfo = m_DeviceFormatsAndModes[i].ModeAndDefaultFormat;
+                            numModes = m_DeviceFormatsAndModes[i].ModeAndDefaultFormatCount;
+                            break;
+                        }
+                    }
+                }
+
+                // Iterate through FormatsAndModes to find the 'DefaultFormat' for the 'DEFAULT' processing mode
+                // Make note of the RAW format for cases where DEFAULT mode is not supported by endpoint
+                for (i = 0; i < numModes; i++, ++modeInfo)
+                {
+                    if ((IsEqualGUIDAligned(modeInfo->Mode, AUDIO_SIGNALPROCESSINGMODE_DEFAULT)) &&
+                        (modeInfo->DefaultFormat != NULL))
+                    {
+                        bFound = TRUE;
+                        break;
+                    }
+                    else if ((IsEqualGUIDAligned(modeInfo->Mode, AUDIO_SIGNALPROCESSINGMODE_RAW)) &&
+                        (modeInfo->DefaultFormat != NULL))
+                    {
+                        modeInfo_RAW = modeInfo;
+                    }
+                }
+
+                if (!bFound &&
+                    modeInfo_RAW)
+                {
+                    modeInfo = modeInfo_RAW;
+                    bFound = TRUE;
+                }
+
+                if (!bFound)
+                {
+                    return STATUS_NOT_SUPPORTED;
+                }
+
+                RtlCopyMemory(propFormat, modeInfo->DefaultFormat, modeInfo->DefaultFormat->FormatSize);
+                PropertyRequest->ValueSize = modeInfo->DefaultFormat->FormatSize;
+                ntStatus = STATUS_SUCCESS;
+            }
+        }
+        else
+#endif // defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND)
+        if (IsKeywordDetectorPin(kspPin->PinId))
+        {
+            KSDATAFORMAT_WAVEFORMATEXTENSIBLE *propFormat = (KSDATAFORMAT_WAVEFORMATEXTENSIBLE *)PropertyRequest->Value;
+            ULONG numModes = 0;
+            MODE_AND_DEFAULT_FORMAT *modeInfo = NULL;
+
+            numModes = GetPinSupportedDeviceModes(kspPin->PinId, &modeInfo);
+            if (numModes == 0 || modeInfo->DefaultFormat == NULL)
+            {
+                return STATUS_NOT_SUPPORTED;
+            }
+
+            RtlCopyMemory(propFormat, modeInfo->DefaultFormat, modeInfo->DefaultFormat->FormatSize);
+            PropertyRequest->ValueSize = modeInfo->DefaultFormat->FormatSize;
+            ntStatus = STATUS_SUCCESS;
+        }
     }
-
-    //
-    // Make sure there are enough resources to handle a new pin creation with
-    // this format.
-    //
-    if (IsOffloadPin(kspPin->PinId))
+    else if (PropertyRequest->Verb & KSPROPERTY_TYPE_SET)
     {
-        ntStatus = ValidateStreamCreate(kspPin->PinId, FALSE, AUDIO_SIGNALPROCESSINGMODE_DEFAULT);
+        pKsFormat = (PKSDATAFORMAT)PropertyRequest->Value;
+        ntStatus = IsFormatSupported(kspPin->PinId,
+            IsSystemCapturePin(kspPin->PinId) || IsCellularBiDiCapturePin(kspPin->PinId) ||
+            IsLoopbackPin(kspPin->PinId),
+            pKsFormat);
+        if (!NT_SUCCESS(ntStatus))
+        {
+            return ntStatus;
+        }
+
+        //
+        // Make sure there are enough resources to handle a new pin creation with
+        // this format.
+        //
+        if (IsOffloadPin(kspPin->PinId))
+        {
+            ntStatus = ValidateStreamCreate(kspPin->PinId, FALSE);
+        }
     }
 
     return ntStatus;
 } // PropertyHandlerProposedFormat
+
+//=============================================================================
+#pragma code_seg()
+VOID
+CMiniportWaveRT::GenerateEventList
+(
+    _In_opt_    GUID   *Set,
+    _In_        ULONG   EventId,
+    _In_        BOOL    PinEvent,
+    _In_        ULONG   PinId,
+    _In_        BOOL    NodeEvent,
+    _In_        ULONG   NodeId
+)
+/*++
+
+Routine Description:
+
+  The GenerateEventList method notifies clients through the port driver's list 
+  of event entries that a particular event has occurred.
+
+Arguments:
+
+  Set -
+
+  EventId - 
+
+  PinEvent -
+
+  PinId -
+
+  NodeEvent -
+
+  NodeId -
+
+--*/
+{
+    DPF_ENTER(("[CMiniportWaveRT::GenerateEventList]"));
+
+    ASSERT(m_pPortEvents != NULL);
+
+    m_pPortEvents->GenerateEventList(
+        Set,
+        EventId,
+        PinEvent,
+        PinId,
+        NodeEvent,
+        NodeId);
+}
+
+//=============================================================================
+#pragma code_seg()
+VOID
+CMiniportWaveRT::SendPNPNotification(
+    _In_ const GUID *                   NotificationId,
+    _In_ PVOID                          NotificationBuffer, 
+    _In_ USHORT                         NotificationBufferCb
+    )
+{
+    NTSTATUS                status = STATUS_SUCCESS;
+    PPCNOTIFICATION_BUFFER  buffer = NULL;
+
+    DPF_ENTER(("[SendPNPNotification]"));
+
+    // Allocate a notification buffer.
+    status = m_pPortClsNotifications->AllocNotificationBuffer(PagedPool,
+                                                        NotificationBufferCb,
+                                                        &buffer);
+    if (!NT_SUCCESS(status))
+    {
+        goto exit;
+    }
+
+    // Notification buffer is only guaranteed to be LONG aligned,
+    // it is received as ULONGLONG aligned on the receiving end.
+    RtlCopyMemory(buffer, NotificationBuffer, NotificationBufferCb);    
+
+    //
+    // Generate notification (async).
+    //
+    m_pPortClsNotifications->SendNotification(NotificationId, buffer);
+
+exit:
+    if (buffer != NULL)
+    {
+        // Free notification buffer.
+        m_pPortClsNotifications->FreeNotificationBuffer(buffer);
+        buffer = NULL;
+    }
+}
+
+//=============================================================================
+#pragma code_seg("PAGE")
+NTSTATUS
+CMiniportWaveRT::PropertyHandlerAudioEffectsDiscoveryEffectsList
+(
+    _In_ PPCPROPERTY_REQUEST      PropertyRequest
+)
+{
+    PAGED_CODE();
+
+    DPF_ENTER(("[CMiniportWaveRT::PropertyHandlerAudioEffectsDiscoveryEffectsList]"));
+
+    PKSP_PIN                kspPin                  = NULL;
+    NTSTATUS                ntStatus                = STATUS_INVALID_PARAMETER;
+    PKSP_PINMODE            pKspPinmode             = NULL;
+    GUID                    signalProcessingMode    = AUDIO_SIGNALPROCESSINGMODE_DEFAULT;
+
+    // Verify instance data stores at least KSP_PIN fields beyond KSPPROPERTY.
+    if (PropertyRequest->InstanceSize < (sizeof(KSP_PIN) - RTL_SIZEOF_THROUGH_FIELD(KSP_PIN, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Extract property descriptor from property request instance data
+    kspPin = CONTAINING_RECORD(PropertyRequest->Instance, KSP_PIN, PinId);
+
+    // Get the mode if specified.
+    pKspPinmode = (PKSP_PINMODE)kspPin;
+    signalProcessingMode = pKspPinmode->AudioProcessingMode;
+
+    if (PropertyRequest->InstanceSize >= sizeof(ULONG))
+    {
+        // This prop is only supported on Keyword Detector pins.
+        if (IsKeywordDetectorPin(kspPin->PinId))
+        {
+            ntStatus = STATUS_SUCCESS;
+        }
+        else
+        {
+            ntStatus = STATUS_NOT_SUPPORTED;
+        }
+    }
+
+    IF_FAILED_JUMP(ntStatus, Done);
+
+    // Valid actions: get and basicsupport.
+    ntStatus = STATUS_INVALID_PARAMETER;
+
+    if (PropertyRequest->Verb & KSPROPERTY_TYPE_BASICSUPPORT)
+    {
+        ntStatus = 
+            PropertyHandler_BasicSupport
+            (
+                PropertyRequest,
+                KSPROPERTY_TYPE_BASICSUPPORT | KSPROPERTY_TYPE_GET,
+                VT_ILLEGAL
+            );
+    }
+    else if (PropertyRequest->Verb & KSPROPERTY_TYPE_GET)
+    {
+        if (IsKeywordDetectorPin(kspPin->PinId))
+        {
+            // Compute total size, two effects: NS and EC (see below).
+            ULONG cbMinSize = 0;
+
+            if(signalProcessingMode == AUDIO_SIGNALPROCESSINGMODE_SPEECH)
+            {
+                cbMinSize = sizeof(GUID) * EFFECTS_LIST_COUNT;
+            }
+            
+            if (PropertyRequest->ValueSize == 0)
+            {
+                PropertyRequest->ValueSize = cbMinSize;
+                ntStatus = STATUS_BUFFER_OVERFLOW;
+            }
+            else if (PropertyRequest->ValueSize < cbMinSize)
+            {
+                ntStatus = STATUS_BUFFER_TOO_SMALL;
+            }
+            else if (signalProcessingMode == AUDIO_SIGNALPROCESSINGMODE_SPEECH)
+            {
+                PGUID effectList = PGUID(PropertyRequest->Value);
+
+                *effectList = AUDIO_EFFECT_TYPE_ACOUSTIC_ECHO_CANCELLATION;
+                *(effectList + 1) = AUDIO_EFFECT_TYPE_NOISE_SUPPRESSION;
+                
+                PropertyRequest->ValueSize = cbMinSize;
+                ntStatus = STATUS_SUCCESS;
+            } 
+            else 
+            {
+                PropertyRequest->ValueSize = 0;
+                ntStatus = STATUS_SUCCESS;
+            }
+        }
+    }
+
+Done:
+
+    return ntStatus;
+} // PropertyHandlerAudioEffectsDiscoveryEffectsList
 
 //=============================================================================
 #pragma code_seg("PAGE")
@@ -1438,6 +2021,70 @@ CMiniportWaveRT::PropertyHandlerModuleNotificationDeviceId
                 PropertyRequest,
                 GetAudioModuleNotificationDeviceId());
 } // PropertyHandlerModuleNotificationDeviceId
+
+//=============================================================================
+#pragma code_seg()
+NTSTATUS
+CMiniportWaveRT_EventHandler_PinCapsChange
+(
+_In_  PPCEVENT_REQUEST EventRequest
+)
+{
+    CMiniportWaveRT* miniport = reinterpret_cast<CMiniportWaveRT*>(EventRequest->MajorTarget);
+    return miniport->EventHandler_PinCapsChange(EventRequest);
+}
+
+//=============================================================================
+#pragma code_seg()
+NTSTATUS
+CMiniportWaveRT::EventHandler_PinCapsChange
+(
+_In_  PPCEVENT_REQUEST EventRequest
+)
+{
+    if (*EventRequest->EventItem->Set != KSEVENTSETID_PinCapsChange)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    switch (EventRequest->Verb)
+    {
+        // Do we support event handling?!?
+    case PCEVENT_VERB_SUPPORT:
+        break;
+        // We should add the event now!
+    case PCEVENT_VERB_ADD:
+        // If we have the interface and EventEntry is defined ...
+        if (EventRequest->EventEntry)
+        {
+            switch (EventRequest->EventItem->Id)
+            {
+                // Add pincaps format change event to support the force sample rate feature
+                case KSEVENT_PINCAPS_FORMATCHANGE:
+                    m_pPortEvents->AddEventToEventList(EventRequest->EventEntry);
+                    break;
+                default:
+                    return STATUS_INVALID_PARAMETER;
+                    break;
+            }
+        }
+        else
+        {
+            return STATUS_UNSUCCESSFUL;
+        }
+        break;
+
+    case PCEVENT_VERB_REMOVE:
+        // We cannot remove the event but we can stop generating the
+        // events. However, it also doesn't hurt to always generate them ...
+        break;
+
+    default:
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return STATUS_SUCCESS;
+}
 
 
 //=============================================================================
@@ -1723,7 +2370,7 @@ Return Value:
         return STATUS_UNSUCCESSFUL;
     }
 
-    ulContentIds = new (NonPagedPoolNx, MINWAVERT_POOLTAG) ULONG[m_ulMaxSystemStreams + m_ulMaxOffloadStreams];
+    ulContentIds = new (POOL_FLAG_NON_PAGED, MINWAVERT_POOLTAG) ULONG[m_ulMaxSystemStreams + m_ulMaxOffloadStreams];
     if (!ulContentIds)
     {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -1881,13 +2528,12 @@ CMiniportWaveRT::AllocStreamAudioModules
     //
     size = cModules * sizeof(AUDIOMODULE);
 #pragma prefast(suppress:__WARNING_MEMORY_LEAK,"No leaking, stream obj dtor calls FreeStreamAudioModules")
-    pAudioModules = (AUDIOMODULE *)ExAllocatePoolWithTag(NonPagedPoolNx, size, MINWAVERT_POOLTAG);
+    pAudioModules = (AUDIOMODULE *)ExAllocatePool2(POOL_FLAG_NON_PAGED, size, MINWAVERT_POOLTAG);
     if (pAudioModules == NULL)
     {
         ntStatus = STATUS_INSUFFICIENT_RESOURCES;
         goto exit;
     }
-    RtlZeroMemory(pAudioModules, size);
     
     for (i=0, j=0; i<GetAudioModuleListCount() && j<cModules; ++i)
     {
@@ -1928,14 +2574,13 @@ CMiniportWaveRT::AllocStreamAudioModules
             {
 #pragma prefast(suppress:__WARNING_MEMORY_LEAK,"No leaking, stream obj dtor calls FreeStreamAudioModules")
                 pAudioModules[j].Context = 
-                    ExAllocatePoolWithTag(NonPagedPoolNx, size, MINWAVERT_POOLTAG);
+                    ExAllocatePool2(POOL_FLAG_NON_PAGED, size, MINWAVERT_POOLTAG);
                 
                 if (pAudioModules[j].Context == NULL)
                 {
                     ntStatus = STATUS_INSUFFICIENT_RESOURCES;
                     goto exit;
                 }
-                RtlZeroMemory(pAudioModules[j].Context, size);
             }
         
             //
@@ -2077,7 +2722,7 @@ DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorPatterns)
     // No items so clear the configuration.
     if (itemsHeader->Count == 0)
     {
-        m_KeywordDetector.ResetDetector();
+        m_KeywordDetector.ResetDetector(CONTOSO_KEYWORD1);
         return STATUS_SUCCESS;
     }
 
@@ -2124,9 +2769,7 @@ DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorPatterns)
     pattern = (CONTOSO_KEYWORDCONFIGURATION*)(patternHeader);
 
     // Program the hardware.
-    m_KeywordDetector.DownloadDetectorData(pattern->ContosoDetectorConfigurationData);
-
-    return STATUS_SUCCESS;
+    return m_KeywordDetector.DownloadDetectorData(CONTOSO_KEYWORD1, pattern->ContosoDetectorConfigurationData);
 }
 
 DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Get_SoundDetectorArmed)
@@ -2138,9 +2781,8 @@ DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Get_SoundDetectorArmed)
     NT_ASSERT(PropertyRequest->ValueSize >= sizeof(BOOL));
 
     RtlZeroMemory(PropertyRequest->Value, PropertyRequest->ValueSize);
-    *(BOOL*)PropertyRequest->Value = m_KeywordDetector.GetArmed();
 
-    return STATUS_SUCCESS;
+    return m_KeywordDetector.GetArmed(CONTOSO_KEYWORD1, (BOOL*)PropertyRequest->Value);
 }
 
 DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorArmed)
@@ -2156,7 +2798,7 @@ DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorArmed)
 
     armed = ((*(BOOL*)PropertyRequest->Value) != 0);
 
-    ntStatus = m_KeywordDetector.SetArmed(armed);
+    ntStatus = m_KeywordDetector.SetArmed(CONTOSO_KEYWORD1, armed);
 
     if (NT_SUCCESS(ntStatus) && armed)
     {
@@ -2164,7 +2806,7 @@ DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorArmed)
         // it is armed, but later, find a better way to demonstrate this from
         // within CKeywordDetector.
         m_pPortEvents->GenerateEventList(const_cast<GUID*>(&KSEVENTSETID_SoundDetector), KSEVENT_SOUNDDETECTOR_MATCHDETECTED, FALSE, 0, FALSE, 0);
-        m_KeywordDetector.SetArmed(FALSE);
+        m_KeywordDetector.SetArmed(CONTOSO_KEYWORD1, FALSE);
     }
 
     return ntStatus;
@@ -2187,12 +2829,296 @@ DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Get_SoundDetectorMatchResult)
 
     value->Header.Size = sizeof(CONTOSO_KEYWORDDETECTIONRESULT);
     value->Header.PatternType = CONTOSO_KEYWORDCONFIGURATION_IDENTIFIER;
-    value->ContosoDetectorResultData = m_KeywordDetector.GetDetectorData();
+    value->KeywordStartTimestamp = m_KeywordDetector.GetStartTimestamp();
+    value->KeywordStopTimestamp = m_KeywordDetector.GetStopTimestamp();
 
     PropertyRequest->ValueSize = sizeof(*value);
-    
+
+    return m_KeywordDetector.GetDetectorData(CONTOSO_KEYWORD1, &(value->ContosoDetectorResultData));
+}
+
+DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Get_SoundDetectorSupportedPatterns2)
+{
+    CONTOSO_SUPPORTEDPATTERNSVALUE *value;
+    PKSSOUNDDETECTORPROPERTY        propertyInstance = NULL;
+
+    PAGED_CODE();
+
+    NT_ASSERT(PropertyRequest->ValueSize >= sizeof(*value));
+
+    if (PropertyRequest->InstanceSize < (sizeof(KSSOUNDDETECTORPROPERTY) - RTL_SIZEOF_THROUGH_FIELD(KSSOUNDDETECTORPROPERTY, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    propertyInstance = CONTAINING_RECORD(PropertyRequest->Instance, KSSOUNDDETECTORPROPERTY, EventId);
+
+    // There is currently only support for 1 OEM DLL, and that CLSID is returned when
+    // the EventID is GUID_NULL.
+    if (propertyInstance->EventId != GUID_NULL)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Does this filter support a sound detector?
+    if ((m_DeviceFlags & ENDPOINT_SOUNDDETECTOR_SUPPORTED) == 0)
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    value = (CONTOSO_SUPPORTEDPATTERNSVALUE*)PropertyRequest->Value;
+
+    RtlZeroMemory(value, sizeof(*value));
+
+    value->MultipleItem.Size = sizeof(*value);
+    value->MultipleItem.Count = 1;
+    value->PatternType[0] = CONTOSO_KEYWORDCONFIGURATION_IDENTIFIER2;
+
+    PropertyRequest->ValueSize = sizeof(*value);
+
     return STATUS_SUCCESS;
 }
+
+DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorPatterns2)
+{
+    KSMULTIPLE_ITEM *itemsHeader;
+    PKSSOUNDDETECTORPROPERTY        propertyInstance = NULL;
+    SOUNDDETECTOR_PATTERNHEADER *patternHeader;
+    CONTOSO_KEYWORDCONFIGURATION *pattern;
+    ULONG cbRemaining;                          // Tracks bytes remaining in property value
+
+    PAGED_CODE();
+
+    if (PropertyRequest->InstanceSize < (sizeof(KSSOUNDDETECTORPROPERTY) - RTL_SIZEOF_THROUGH_FIELD(KSSOUNDDETECTORPROPERTY, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    propertyInstance = CONTAINING_RECORD(PropertyRequest->Instance, KSSOUNDDETECTORPROPERTY, EventId);
+
+    cbRemaining = PropertyRequest->ValueSize;
+
+    // The SYSVADPROPERTY_ITEM for this property ensures the value size is at
+    // least sizeof KSMULTIPLE_ITEM.
+    if (cbRemaining < sizeof(KSMULTIPLE_ITEM))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    itemsHeader = (KSMULTIPLE_ITEM*)PropertyRequest->Value;
+
+    // Verify property value is large enough to include the items
+    if (itemsHeader->Size > cbRemaining)
+    {
+        PropertyRequest->ValueSize = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // No items so clear the configuration.
+    if (itemsHeader->Count == 0)
+    {
+        m_KeywordDetector.ResetDetector(propertyInstance->EventId);
+        return STATUS_SUCCESS;
+    }
+
+    // This sample supports only 1 pattern type.
+    if (itemsHeader->Count > 1)
+    {
+        PropertyRequest->ValueSize = 0;
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    // Bytes remaining after the items header
+    cbRemaining = itemsHeader->Size - sizeof(*itemsHeader);
+
+    // Verify the property value is large enough to include the pattern header.
+    if (cbRemaining < sizeof(SOUNDDETECTOR_PATTERNHEADER))
+    {
+        PropertyRequest->ValueSize = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    patternHeader = (SOUNDDETECTOR_PATTERNHEADER*)(itemsHeader + 1);
+
+    // Verify the pattern type is supported.
+    if (patternHeader->PatternType != CONTOSO_KEYWORDCONFIGURATION_IDENTIFIER2)
+    {
+        PropertyRequest->ValueSize = 0;
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    // Verify the property value is large enough for the pattern.
+    if (cbRemaining < patternHeader->Size)
+    {
+        PropertyRequest->ValueSize = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Verify the pattern is large enough.
+    if (patternHeader->Size != sizeof(CONTOSO_KEYWORDCONFIGURATION))
+    {
+        PropertyRequest->ValueSize = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    pattern = (CONTOSO_KEYWORDCONFIGURATION*)(patternHeader);
+
+    return m_KeywordDetector.DownloadDetectorData(propertyInstance->EventId, pattern->ContosoDetectorConfigurationData);
+}
+
+DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Get_SoundDetectorArmed2)
+{
+    PKSSOUNDDETECTORPROPERTY        propertyInstance = NULL;
+
+    PAGED_CODE();
+
+    if (PropertyRequest->InstanceSize < (sizeof(KSSOUNDDETECTORPROPERTY) - RTL_SIZEOF_THROUGH_FIELD(KSSOUNDDETECTORPROPERTY, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    propertyInstance = CONTAINING_RECORD(PropertyRequest->Instance, KSSOUNDDETECTORPROPERTY, EventId);
+
+    // The SYSVADPROPERTY_ITEM for this property ensures the value size is at
+    // least sizeof BOOL.
+    NT_ASSERT(PropertyRequest->ValueSize >= sizeof(BOOL));
+
+    RtlZeroMemory(PropertyRequest->Value, PropertyRequest->ValueSize);
+    return m_KeywordDetector.GetArmed(propertyInstance->EventId, (BOOL*)PropertyRequest->Value);
+}
+
+DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorArmed2)
+{
+    NTSTATUS ntStatus;
+    BOOL armed;
+    PKSSOUNDDETECTORPROPERTY        propertyInstance = NULL;
+
+    PAGED_CODE();
+
+    if (PropertyRequest->InstanceSize < (sizeof(KSSOUNDDETECTORPROPERTY) - RTL_SIZEOF_THROUGH_FIELD(KSSOUNDDETECTORPROPERTY, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    propertyInstance = CONTAINING_RECORD(PropertyRequest->Instance, KSSOUNDDETECTORPROPERTY, EventId);
+
+    // The SYSVADPROPERTY_ITEM for this property ensures the value size is at
+    // least sizeof BOOL.
+    NT_ASSERT(PropertyRequest->ValueSize >= sizeof(BOOL));
+
+    armed = ((*(BOOL*)PropertyRequest->Value) != 0);
+
+    ntStatus = m_KeywordDetector.SetArmed(propertyInstance->EventId, armed);
+
+    // THIS BLOCK IS FOR SYSVAD TESTING ONLY AND WILL NEED TO BE REMOVED
+    if (NT_SUCCESS(ntStatus) && armed &&
+        (propertyInstance->EventId == CONTOSO_KEYWORD1 || 
+        propertyInstance->EventId == CONTOSO_KEYWORD2))
+    {
+        CONTOSO_KEYWORDDETECTIONRESULT value = {0};
+
+        m_KeywordDetector.NotifyDetection();
+
+        value.EventId = propertyInstance->EventId;
+        value.Header.Size = sizeof(CONTOSO_KEYWORDDETECTIONRESULT);
+        value.Header.PatternType = CONTOSO_KEYWORDCONFIGURATION_IDENTIFIER2;
+        value.KeywordStartTimestamp = m_KeywordDetector.GetStartTimestamp();
+        value.KeywordStopTimestamp = m_KeywordDetector.GetStopTimestamp();        
+        m_KeywordDetector.GetDetectorData(propertyInstance->EventId, &(value.ContosoDetectorResultData));
+
+        SendPNPNotification(&KSNOTIFICATIONID_SoundDetector, &value, sizeof(value));
+    }
+
+    return ntStatus;
+}
+
+DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Set_SoundDetectorReset2)
+{
+    NTSTATUS ntStatus = STATUS_SUCCESS;
+    BOOL reset;
+    PKSSOUNDDETECTORPROPERTY        propertyInstance = NULL;
+
+    PAGED_CODE();
+
+    if (PropertyRequest->InstanceSize < (sizeof(KSSOUNDDETECTORPROPERTY) - RTL_SIZEOF_THROUGH_FIELD(KSSOUNDDETECTORPROPERTY, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    propertyInstance = CONTAINING_RECORD(PropertyRequest->Instance, KSSOUNDDETECTORPROPERTY, EventId);
+
+    // The SYSVADPROPERTY_ITEM for this property ensures the value size is at
+    // least sizeof BOOL.
+    NT_ASSERT(PropertyRequest->ValueSize >= sizeof(BOOL));
+
+    reset = ((*(BOOL*)PropertyRequest->Value) != 0);
+
+    if (reset)
+    {
+        ntStatus = m_KeywordDetector.ResetDetector(propertyInstance->EventId);
+    }
+
+    return ntStatus;
+}
+
+DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Get_SoundDetectorStreamingSupport2)
+{
+    PKSSOUNDDETECTORPROPERTY        propertyInstance = NULL;
+
+    PAGED_CODE();
+
+    if (PropertyRequest->InstanceSize < (sizeof(KSSOUNDDETECTORPROPERTY) - RTL_SIZEOF_THROUGH_FIELD(KSSOUNDDETECTORPROPERTY, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    propertyInstance = CONTAINING_RECORD(PropertyRequest->Instance, KSSOUNDDETECTORPROPERTY, EventId);
+
+    // The SYSVADPROPERTY_ITEM for this property ensures the value size is at
+    // least sizeof BOOL.
+    NT_ASSERT(PropertyRequest->ValueSize >= sizeof(BOOL));
+
+    RtlZeroMemory(PropertyRequest->Value, PropertyRequest->ValueSize);
+    return m_KeywordDetector.GetStreamingSupport(propertyInstance->EventId, (BOOL*)PropertyRequest->Value);
+}
+
+DEFINE_CLASSPROPERTYHANDLER(CMiniportWaveRT, Get_InterleavedFormatInformation)
+{
+    PAGED_CODE();
+
+    PKSP_PIN propertyInstance = NULL;
+
+    // being a SYSVADPROPERTY, the property item is a SYSVADPROPERTY_ITEM, which contains
+    // some context information from the endpoint
+    SYSVADPROPERTY_ITEM* item = (SYSVADPROPERTY_ITEM*)PropertyRequest->PropertyItem;
+
+    // retrieve the pin information, so we can validate that this was called on the keyword pin
+    if (PropertyRequest->InstanceSize < (sizeof(KSP_PIN) - RTL_SIZEOF_THROUGH_FIELD(KSP_PIN, Property)))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    propertyInstance = CONTAINING_RECORD(PropertyRequest->Instance, KSP_PIN, PinId);
+
+    // Only Keyword burst pins may support interleaving loopback and microphone audio
+    if (!IsKeywordDetectorPin(propertyInstance->PinId))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // If the context data provided for this endpoint is invalid, or if it is larger than the amount
+    // of data requested, then we have an invalid parameter
+    if (NULL == item->ContextData || item->ContextDataSize > PropertyRequest->ValueSize)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // copy the context data (which is interleaving information), into the output.
+    RtlCopyMemory(PropertyRequest->Value, item->ContextData , item->ContextDataSize);
+
+    return STATUS_SUCCESS;
+}
+
 
 #pragma code_seg()
 NTSTATUS CMiniportWaveRT_EventHandler_SoundDetectorMatchDetected
@@ -2217,7 +3143,6 @@ NTSTATUS CMiniportWaveRT::EventHandler_SoundDetectorMatchDetected
     }
     return STATUS_SUCCESS;
 }
-
 #pragma code_seg("PAGE")
 NTSTATUS
 PropertyHandler_WaveFilter
@@ -2293,6 +3218,18 @@ Return Value:
             ntStatus = pWaveHelper->PropertyHandlerModuleNotificationDeviceId(PropertyRequest);
             break;
 
+        default:
+            DPF(D_TERSE, ("[PropertyHandler_WaveFilter: Invalid Device Request]"));
+        }
+    }
+    else if (IsEqualGUIDAligned(*PropertyRequest->PropertyItem->Set, KSPROPSETID_AudioEffectsDiscovery))
+    {
+        switch(PropertyRequest->PropertyItem->Id)
+        {
+        case KSPROPERTY_AUDIOEFFECTSDISCOVERY_EFFECTSLIST:
+            ntStatus = pWaveHelper->PropertyHandlerAudioEffectsDiscoveryEffectsList(PropertyRequest);
+            break;
+            
         default:
             DPF(D_TERSE, ("[PropertyHandler_WaveFilter: Invalid Device Request]"));
         }
@@ -2490,10 +3427,15 @@ exit:
 #pragma code_seg("PAGE")
 CKeywordDetector::CKeywordDetector()
     :
+    m_streamRunning(FALSE),
     m_qpcStartCapture(0),
     m_nLastQueuedPacket(-1),
-    m_SoundDetectorArmed(FALSE),
-    m_SoundDetectorData(0)
+    m_SoundDetectorArmed1(FALSE),
+    m_SoundDetectorArmed2(FALSE),
+    m_SoundDetectorData1(0),
+    m_SoundDetectorData2(0),
+    m_ullKeywordStartTimestamp(0),
+    m_ullKeywordStopTimestamp(0)
 {
     PAGED_CODE();
 
@@ -2505,29 +3447,159 @@ CKeywordDetector::CKeywordDetector()
 
 #pragma code_seg("PAGE")
 _IRQL_requires_max_(PASSIVE_LEVEL)
-VOID CKeywordDetector::ResetDetector()
+NTSTATUS CKeywordDetector::ReadKeywordTimestampRegistry()
 {
     PAGED_CODE();
 
-    m_SoundDetectorData = 0;
+    NTSTATUS                    ntStatus;
+    UNICODE_STRING              parametersPath;
+
+    RTL_QUERY_REGISTRY_TABLE    paramTable[] = {
+        // QueryRoutine     Flags                                               Name                            EntryContext                            DefaultType                                                     DefaultData                                 DefaultLength
+        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"KeywordDetectorStartTimestamp",   &m_ullKeywordStartTimestamp,    (REG_QWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_QWORD,  &m_ullKeywordStartTimestamp,        sizeof(ULONGLONG) },
+        { NULL,   RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_TYPECHECK, L"KeywordDetectorStopTimestamp",    &m_ullKeywordStopTimestamp,     (REG_QWORD << RTL_QUERY_REGISTRY_TYPECHECK_SHIFT) | REG_QWORD,  &m_ullKeywordStopTimestamp,         sizeof(ULONGLONG) },
+        { NULL,   0,                                                        NULL,                               NULL,                                   0,                                                              NULL,                                       0 }
+    };
+
+    RtlInitUnicodeString(&parametersPath, NULL);
+
+    // The sizeof(WCHAR) is added to the maximum length, for allowing a space for null termination of the string.
+    parametersPath.MaximumLength =
+        g_RegistryPath.Length + sizeof(L"\\Parameters") + sizeof(WCHAR);
+
+    parametersPath.Buffer = (PWCH)ExAllocatePool2(POOL_FLAG_PAGED, parametersPath.MaximumLength, MINWAVERT_POOLTAG);
+    if (parametersPath.Buffer == NULL)
+    {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    RtlAppendUnicodeToString(&parametersPath, g_RegistryPath.Buffer);
+    RtlAppendUnicodeToString(&parametersPath, L"\\Parameters");
+
+    ntStatus = RtlQueryRegistryValues(
+        RTL_REGISTRY_ABSOLUTE | RTL_REGISTRY_OPTIONAL,
+        parametersPath.Buffer,
+        &paramTable[0],
+        NULL,
+        NULL
+    );
+
+    ExFreePool(parametersPath.Buffer);
+
+    return ntStatus;
+}
+
+
+#pragma code_seg("PAGE")
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS CKeywordDetector::ResetDetector(_In_ GUID eventId)
+{
+    PAGED_CODE();
+
+    if (eventId == CONTOSO_KEYWORD1)
+    {
+        m_SoundDetectorData1 = 0;
+        m_SoundDetectorArmed1 = FALSE;
+    }
+    else if(eventId == CONTOSO_KEYWORD2)
+    {
+        m_SoundDetectorData2 = 0;
+        m_SoundDetectorArmed2 = FALSE;
+    }
+    else if(eventId == GUID_NULL)
+    {
+        // When DownloadDetectorData is called to set the pattern for multiple keywords
+        // at once, all keyword detectors must be reset. Also used during keyword detector
+        // initialization and cleanup to restore it back to initial state and power down.
+        m_SoundDetectorData1 = 0;
+        m_SoundDetectorArmed1 = FALSE;
+        m_SoundDetectorData2 = 0;
+        m_SoundDetectorArmed2 = FALSE;
+    }
+    else
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return STATUS_SUCCESS;
 }
 
 #pragma code_seg("PAGE")
 _IRQL_requires_max_(PASSIVE_LEVEL)
-VOID CKeywordDetector::DownloadDetectorData(_In_ LONGLONG Data)
+NTSTATUS CKeywordDetector::DownloadDetectorData(_In_ GUID eventId, _In_ LONGLONG Data)
 {
     PAGED_CODE();
 
-    m_SoundDetectorData = Data;
+    // reset the detector for this event Id
+    ResetDetector(eventId);
+
+    // In this example, the driver supports detection data 
+    // set with a single call for both detectors, or each
+    // detector set individually.
+    if (eventId == CONTOSO_KEYWORD1)
+    {
+        m_SoundDetectorData1 = Data;
+    }
+    else if(eventId == CONTOSO_KEYWORD2)
+    {
+        m_SoundDetectorData2 = Data;
+    }
+    else if(eventId == GUID_NULL)
+    {
+        // in this simplified example "Data" is set on both detectors,
+        // however in a real system "Data" could be a data structure which
+        // contains different values for each detector.
+        m_SoundDetectorData1 = m_SoundDetectorData2 = Data;
+    }
+    else
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+// The following function is only applicable to single keyword detection systems,
+// and assumes keyword detector #1.
+#pragma code_seg("PAGE")
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS CKeywordDetector::GetDetectorData(_In_ GUID eventId, _Out_ LONGLONG *Data)
+{
+    PAGED_CODE();
+
+    if (eventId == CONTOSO_KEYWORD1)
+    {
+        *Data = m_SoundDetectorData1;
+    }
+    else if(eventId == CONTOSO_KEYWORD2)
+    {
+        *Data = m_SoundDetectorData2;
+    }
+    else
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+
+    return STATUS_SUCCESS;
 }
 
 #pragma code_seg("PAGE")
 _IRQL_requires_max_(PASSIVE_LEVEL)
-LONGLONG CKeywordDetector::GetDetectorData()
+ULONGLONG CKeywordDetector::GetStartTimestamp()
 {
     PAGED_CODE();
 
-    return m_SoundDetectorData;
+    return m_ullKeywordStartTimestamp;
+}
+
+#pragma code_seg("PAGE")
+_IRQL_requires_max_(PASSIVE_LEVEL)
+ULONGLONG CKeywordDetector::GetStopTimestamp()
+{
+    PAGED_CODE();
+
+    return m_ullKeywordStopTimestamp;
 }
 
 #pragma code_seg("PAGE")
@@ -2550,28 +3622,85 @@ VOID CKeywordDetector::ResetFifo()
 
 #pragma code_seg("PAGE")
 _IRQL_requires_max_(PASSIVE_LEVEL)
-NTSTATUS CKeywordDetector::SetArmed(_In_ BOOL Arm)
+NTSTATUS CKeywordDetector::SetArmed(_In_ GUID eventId, _In_ BOOL Arm)
 {
     PAGED_CODE();
 
-    BOOL previousArming = m_SoundDetectorArmed;
+    BOOL previousArming = FALSE;
+    NTSTATUS ntStatus = STATUS_SUCCESS;
 
-    m_SoundDetectorArmed = Arm;
+    // the previous state is "armed" if either detector is armed.
+    // this reflects the fact that both detectors are sharing the
+    // same stream.
+    previousArming = m_SoundDetectorArmed1 || m_SoundDetectorArmed2;
+
+    if (eventId == CONTOSO_KEYWORD1)
+    {
+        m_SoundDetectorArmed1 = Arm;
+    }
+    else if(eventId == CONTOSO_KEYWORD2)
+    {
+        m_SoundDetectorArmed2 = Arm;
+    }
+    else
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
 
     if (Arm && !previousArming && m_qpcStartCapture == 0)
     {
         StartBufferingStream();
     }
-    return STATUS_SUCCESS;
+    else if (!Arm && previousArming && !m_streamRunning)
+    {
+        // if it's not actively streaming and everything has been disarmed,
+        // then stop buffering.
+        ResetFifo();
+    }
+
+    return ntStatus;
 }
 
 #pragma code_seg("PAGE")
 _IRQL_requires_max_(PASSIVE_LEVEL)
-BOOL CKeywordDetector::GetArmed()
+NTSTATUS CKeywordDetector::GetArmed(_In_ GUID eventId, _Out_ BOOL *Arm)
 {
     PAGED_CODE();
+    NTSTATUS ntStatus = STATUS_SUCCESS;
 
-    return m_SoundDetectorArmed;
+    if (eventId == CONTOSO_KEYWORD1)
+    {
+        *Arm = m_SoundDetectorArmed1;
+    }
+    else if(eventId == CONTOSO_KEYWORD2)
+    {
+        *Arm = m_SoundDetectorArmed2;
+    }
+    else
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return ntStatus;
+}
+
+#pragma code_seg("PAGE")
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS CKeywordDetector::GetStreamingSupport(_In_ GUID eventId, _Out_ BOOL *Support)
+{
+    PAGED_CODE();
+    NTSTATUS ntStatus = STATUS_SUCCESS;
+
+    if (eventId == GUID_NULL)
+    {
+        *Support = TRUE;
+    }
+    else
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return ntStatus;
 }
 
 #pragma code_seg("PAGE")
@@ -2584,6 +3713,8 @@ VOID CKeywordDetector::Run()
     {
         StartBufferingStream();
     }
+
+    m_streamRunning = TRUE;
 }
 
 #pragma code_seg("PAGE")
@@ -2593,6 +3724,7 @@ VOID CKeywordDetector::Stop()
     PAGED_CODE();
 
     ResetFifo();
+    m_streamRunning = FALSE;
 }
 
 #pragma code_seg("PAGE")
@@ -2609,6 +3741,63 @@ VOID CKeywordDetector::StartBufferingStream()
 
     qpc = KeQueryPerformanceCounter(&qpcFrequency);
     m_qpcStartCapture = qpc.QuadPart;
+    m_qpcFrequency = qpcFrequency.QuadPart;
+
+    return;
+}
+
+#pragma code_seg("PAGE")
+_IRQL_requires_max_(PASSIVE_LEVEL)
+VOID CKeywordDetector::NotifyDetection()
+{
+    PAGED_CODE();
+
+    // A detection will only happen if armed and the
+    // stream is already running. If there isn't a client
+    // running, then set the stream start time to align
+    // with this detection.
+    if (!m_streamRunning)
+    {
+        StartBufferingStream();
+
+        // The following code is for testing purposes only.
+        // m_qpcFrequency is defined to be the number of ticks in 1 second.
+        // Use the stream start time (the current time retrieved in StartBufferStream) to 
+        // mark when the keyword ended, and the start time minus 1 second worth of ticks
+        // to mark when the keyword started. Also, adjust the stream start time to align
+        // to this new keyword start time, so that the simulated stream contains the full keyword.
+
+        m_ullKeywordStopTimestamp = m_qpcStartCapture; // stop time is the current time
+        m_qpcStartCapture = m_qpcStartCapture - m_qpcFrequency; // buffer start time is 1 second ago
+        m_ullKeywordStartTimestamp = m_qpcStartCapture; // buffer start time = keyword start time
+
+    }
+    else
+    {
+        // The following code is for testing purposes only.
+        // If the stream is running, we cannot modify qpcStartCapture to be in
+        // the past, so instead make the keyword start & stop times fit within the
+        // time period that the keyword has been running. If it has been running
+        // for more than 1 second, then set the keyword start time to be 1 second back
+        // into the stream, as though we just figured out there was a keyword there.
+        // If it has been running less than one second, then the keyword size ends
+        // up being however long the stream has been running. 
+
+        LARGE_INTEGER qpc;
+        qpc = KeQueryPerformanceCounter(NULL);
+
+        m_ullKeywordStopTimestamp = qpc.QuadPart; // stop time is the current time
+
+        if (m_qpcStartCapture < (qpc.QuadPart - m_qpcFrequency))
+        {
+            m_ullKeywordStartTimestamp = (qpc.QuadPart - m_qpcFrequency); 
+        }
+        else
+        {
+            m_ullKeywordStartTimestamp = m_qpcStartCapture;
+        }
+
+    }
 
     return;
 }
@@ -2632,7 +3821,6 @@ VOID CKeywordDetector::DpcRoutine(_In_ LONGLONG PerformanceCounter, _In_ LONGLON
     {
         LIST_ENTRY*     packetListEntry;
         PACKET_ENTRY*   packetEntry;
-        LONGLONG*       signature;
 
         do
         {
@@ -2656,12 +3844,7 @@ VOID CKeywordDetector::DpcRoutine(_In_ LONGLONG PerformanceCounter, _In_ LONGLON
 
         RtlZeroMemory(&packetEntry->Samples[0], sizeof(packetEntry->Samples));
 
-        // For test purposes, embed the packet number and sample time into the audio data
-        signature = (LONGLONG*)(&packetEntry->Samples[0]);
-
-        signature[0] = packetEntry->PacketNumber;
-        signature[1] = packetEntry->QpcWhenSampled;
-
+        InitializeListHead(packetListEntry);
         ExInterlockedInsertTailList(&PacketFifoHead, packetListEntry, &PacketFifoSpinLock);
 
         packetsToQueue -= 1;
@@ -2717,4 +3900,7 @@ Exit:
 
     return ntStatus;
 }
+
+#pragma code_seg()
+
 

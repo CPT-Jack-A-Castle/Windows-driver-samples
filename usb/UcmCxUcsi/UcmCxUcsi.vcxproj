@@ -90,6 +90,7 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);.</AdditionalIncludeDirectories>
       <WppEnabled>true</WppEnabled>
       <WppRecorderEnabled>true</WppRecorderEnabled>
       <WppScanConfigurationData>trace.h</WppScanConfigurationData>
@@ -97,6 +98,9 @@
       </WppAlternateConfigurationFile>
       <WppAdditionalOptions>-scan:"$(UCM_INC_PATH)\$(UCM_VER_PATH)\UcmTraceEnums.h" -scan:"$(KMDF_INC_PATH)\$(KMDF_VER_PATH)\wdftraceenums.h" %(WppAdditionalOptions)</WppAdditionalOptions>
     </ClCompile>
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
   </ItemDefinitionGroup>
   <ItemGroup>
     <Inf Include="UcmCxUcsi.inf" />

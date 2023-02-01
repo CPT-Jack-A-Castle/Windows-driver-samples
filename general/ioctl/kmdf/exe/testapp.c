@@ -198,7 +198,8 @@ GetCoinstallerVersion(
     VOID
     )
 {
-    if (FAILED( StringCchPrintf(G_coInstallerVersion,
+    if (!G_versionSpecified &&
+        FAILED( StringCchPrintf(G_coInstallerVersion,
                                 MAX_VERSION_SIZE,
                                 "%02d%03d",    // for example, "01009"
                                 KMDF_VERSION_MAJOR,
@@ -283,7 +284,7 @@ main(
         }
 
         //
-        // The driver is not started yet so let us the install the driver.
+        // The driver is not started yet so let us install the driver.
         // First setup full path to driver name.
         //
         ok = SetupDriverName( driverLocation, MAX_PATH );
@@ -411,7 +412,7 @@ DoIoctls(
 
 
     //
-    // Performing METHOD_NIETHER
+    // Performing METHOD_NEITHER
     //
 
     printf("\nCalling DeviceIoControl METHOD_NEITHER\n");

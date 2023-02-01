@@ -11,16 +11,15 @@ Module Name:
 
     toastmon.c
 
-Abstract: 
+Abstract:
           This sample demonstrates how to register PnP event notification
           for an interface class, how to open the target device in the
           callback and register and respond to device change notification.
-          
+
           To schedule sending Read and Write requests to the target device
-          the sample uses a "passive" timer. This feature enables getting 
-          a timer callback at PASSIVE_LEVEL without having to create and 
-          queue a WDFWORKITEM objects on its own.		  
-          
+          the sample uses a "passive" timer. This feature enables getting
+          a timer callback at PASSIVE_LEVEL without having to create and
+          queue a WDFWORKITEM objects on its own.
 
 Environment:
 
@@ -39,17 +38,18 @@ Environment:
 #pragma alloc_text (INIT, DriverEntry)
 #pragma alloc_text (PAGE, ToastMon_EvtDeviceAdd)
 #pragma alloc_text (PAGE, ToastMon_EvtDeviceContextCleanup)
+#pragma alloc_text (PAGE, ToastMon_EvtDeviceD0Exit)
 #pragma alloc_text (PAGE, ToastMon_PnpNotifyInterfaceChange)
 #pragma alloc_text (PAGE, ToastMon_EvtIoTargetQueryRemove)
 #pragma alloc_text (PAGE, ToastMon_EvtIoTargetRemoveCanceled)
 #pragma alloc_text (PAGE, ToastMon_EvtIoTargetRemoveComplete)
 #endif
 
-
+_Use_decl_annotations_
 NTSTATUS
 DriverEntry(
-    IN PDRIVER_OBJECT  DriverObject,
-    IN PUNICODE_STRING RegistryPath
+    PDRIVER_OBJECT  DriverObject,
+    PUNICODE_STRING RegistryPath
     )
 /*++
 
@@ -77,7 +77,7 @@ Return Value:
     KdPrint(("ToastMon Driver Sample - Driver Framework Edition.\n"));
 
     //
-    // Initiialize driver config to control the attributes that
+    // Initialize driver config to control the attributes that
     // are global to the driver. Note that framework by default
     // provides a driver unload routine. If you create any resources
     // in the DriverEntry and want to be cleaned in driver unload,
@@ -109,10 +109,11 @@ Return Value:
     return status;
 }
 
+_Use_decl_annotations_
 NTSTATUS
 ToastMon_EvtDeviceAdd(
-    IN WDFDRIVER Driver,
-    IN PWDFDEVICE_INIT DeviceInit
+    WDFDRIVER Driver,
+    PWDFDEVICE_INIT DeviceInit
     )
 /*++
 Routine Description:
@@ -135,14 +136,15 @@ Return Value:
 {
     WDF_OBJECT_ATTRIBUTES           attributes;
     NTSTATUS                        status = STATUS_SUCCESS;
+    WDF_PNPPOWER_EVENT_CALLBACKS    pnpCallbacks;
     WDFDEVICE                       device;
     PDEVICE_EXTENSION               deviceExtension;
-
-    KdPrint( ("ToastMon_EvtDeviceAdd routine\n"));
 
     UNREFERENCED_PARAMETER(Driver);
 
     PAGED_CODE();
+
+    KdPrint( ("ToastMon_EvtDeviceAdd routine\n"));
 
     //
     // Specify the size of device extension where we track per device
@@ -151,6 +153,12 @@ Return Value:
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_EXTENSION);
 
     attributes.EvtCleanupCallback = ToastMon_EvtDeviceContextCleanup;
+
+    WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
+    pnpCallbacks.EvtDeviceD0Entry = ToastMon_EvtDeviceD0Entry;
+    pnpCallbacks.EvtDeviceD0Exit  = ToastMon_EvtDeviceD0Exit;
+
+    WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
 
     //
     // Create a framework device object.This call will inturn create
@@ -218,8 +226,7 @@ Return Value:
                 PNPNOTIFY_DEVICE_INTERFACE_INCLUDE_EXISTING_INTERFACES,
                 (PVOID)&GUID_DEVINTERFACE_TOASTER,
                 WdfDriverWdmGetDriverObject(WdfDeviceGetDriver(device)),
-                (PDRIVER_NOTIFICATION_CALLBACK_ROUTINE)
-                    ToastMon_PnpNotifyInterfaceChange,
+                ToastMon_PnpNotifyInterfaceChange,
                 (PVOID)deviceExtension,
                 &deviceExtension->NotificationHandle);
 
@@ -228,13 +235,11 @@ Return Value:
         return status;
     }
 
-    RegisterForWMINotification(deviceExtension);
+    status = RegisterForWMINotification(deviceExtension);
 
     return status;
 }
 
-#pragma warning(push)
-#pragma warning(disable:28118) // this callback will run at IRQL=PASSIVE_LEVEL
 _Use_decl_annotations_
 VOID
 ToastMon_EvtDeviceContextCleanup(
@@ -263,9 +268,9 @@ Return Value:
 {
     PDEVICE_EXTENSION           deviceExtension;
 
-    KdPrint( ("ToastMon_EvtDeviceContextCleanup\n"));
-
     PAGED_CODE();
+
+    KdPrint( ("ToastMon_EvtDeviceContextCleanup\n"));
 
     deviceExtension = GetDeviceExtension((WDFDEVICE)Device);
 
@@ -290,14 +295,115 @@ Return Value:
 
     return;
 }
-#pragma warning(pop) // enable 28118 again
 
-__drv_functionClass(DRIVER_NOTIFICATION_CALLBACK_ROUTINE)
-__drv_maxIRQL(PASSIVE_LEVEL)
+_Use_decl_annotations_
+NTSTATUS
+ToastMon_EvtDeviceD0Entry(
+    WDFDEVICE               Device,
+    WDF_POWER_DEVICE_STATE  PreviousState
+    )
+/*++
+
+Routine Description:
+
+    EvtDeviceD0Entry performs operations that are needed when the driver's
+    device enters the D0 power state.
+
+    EvtDeviceD0Entry should not be marked as Pageable.
+
+--*/
+{
+    PDEVICE_EXTENSION   deviceExtension;
+    PTARGET_DEVICE_INFO targetDeviceInfo;
+    WDFIOTARGET         ioTarget;
+    ULONG               count, i;
+
+    UNREFERENCED_PARAMETER(PreviousState);
+
+    KdPrint( ("ToastMon_EvtDeviceD0Entry\n"));
+
+    deviceExtension = GetDeviceExtension((WDFDEVICE)Device);
+
+    //
+    // (Re-)Start IoTarget and timers
+    //
+
+    WdfWaitLockAcquire(deviceExtension->TargetDeviceCollectionLock, NULL);
+
+    count = WdfCollectionGetCount(deviceExtension->TargetDeviceCollection);
+    for (i = 0; i < count; i ++) {
+
+        ioTarget = WdfCollectionGetItem(deviceExtension->TargetDeviceCollection, i);
+        NTSTATUS status = WdfIoTargetStart(ioTarget);
+        if (!NT_SUCCESS(status)) {
+            KdPrint(("WdfIoTargetStart failed: 0x%x\n", status));
+            continue;
+        }
+
+        targetDeviceInfo = GetTargetDeviceInfo(ioTarget);
+        WdfTimerStart(targetDeviceInfo->TimerForPostingRequests,
+                                        WDF_REL_TIMEOUT_IN_MS(1));
+    }
+
+    WdfWaitLockRelease(deviceExtension->TargetDeviceCollectionLock);
+
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
+NTSTATUS
+ToastMon_EvtDeviceD0Exit(
+    WDFDEVICE               Device,
+    WDF_POWER_DEVICE_STATE  TargetState
+    )
+/*++
+
+Routine Description:
+
+    EvtDeviceD0Exit performs operations that are needed when the driver's
+    device leaves the D0 power state.
+
+--*/
+{
+    PDEVICE_EXTENSION   deviceExtension;
+    PTARGET_DEVICE_INFO targetDeviceInfo;
+    WDFIOTARGET         ioTarget;
+    ULONG               count, i;
+
+    UNREFERENCED_PARAMETER(TargetState);
+
+    PAGED_CODE();
+
+    KdPrint( ("ToastMon_EvtDeviceD0Exit\n"));
+
+    deviceExtension = GetDeviceExtension((WDFDEVICE)Device);
+
+    //
+    // Stop IoTarget and timers
+    //
+
+    WdfWaitLockAcquire(deviceExtension->TargetDeviceCollectionLock, NULL);
+
+    count = WdfCollectionGetCount(deviceExtension->TargetDeviceCollection);
+    for (i = 0; i < count; i ++) {
+
+        ioTarget = WdfCollectionGetItem(deviceExtension->TargetDeviceCollection, i);
+        WdfIoTargetPurge(ioTarget, WdfIoTargetPurgeIoAndWait);
+
+        targetDeviceInfo = GetTargetDeviceInfo(ioTarget);
+        WdfTimerStop(targetDeviceInfo->TimerForPostingRequests, TRUE);
+    }
+
+    WdfWaitLockRelease(deviceExtension->TargetDeviceCollectionLock);
+
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
 NTSTATUS
 ToastMon_PnpNotifyInterfaceChange(
-    _In_ PVOID NotificationStruct,
-    _Inout_opt_ PVOID Context
+    PVOID NotificationStruct,
+    PVOID Context
     )
 /*++
 
@@ -342,11 +448,11 @@ Return Value:
     WDFIOTARGET                 ioTarget;
     PDEVICE_INTERFACE_CHANGE_NOTIFICATION devNotificationStruct = NotificationStruct;
 
-    _Analysis_assume_(NULL != deviceExtension);
-
     PAGED_CODE();
 
     KdPrint(("Entered ToastMon_PnpNotifyInterfaceChange\n"));
+
+    _Analysis_assume_(NULL != deviceExtension);
 
     //
     // Verify that interface class is a toaster device interface.
@@ -387,20 +493,19 @@ Return Value:
 
         WdfWaitLockRelease(deviceExtension->TargetDeviceCollectionLock);
 
-
     } else {
-
         KdPrint(("Removal Interface Notification\n"));
     }
+
     return STATUS_SUCCESS;
 }
 
-
+_Use_decl_annotations_
 NTSTATUS
 Toastmon_OpenDevice(
-    WDFDEVICE Device,
+    WDFDEVICE       Device,
     PUNICODE_STRING SymbolicLink,
-    WDFIOTARGET *Target
+    WDFIOTARGET*    Target
     )
 /*++
 
@@ -417,15 +522,15 @@ Return Value:
 
 --*/
 {
-    NTSTATUS                    status = STATUS_SUCCESS;
-    PTARGET_DEVICE_INFO         targetDeviceInfo = NULL;
+    NTSTATUS                    status;
+    PTARGET_DEVICE_INFO         targetDeviceInfo;
     WDF_IO_TARGET_OPEN_PARAMS   openParams;
     WDFIOTARGET                 ioTarget;
     WDF_OBJECT_ATTRIBUTES       attributes;
-    PDEVICE_EXTENSION           deviceExtension = GetDeviceExtension(Device);
+    PDEVICE_EXTENSION           deviceExtension;
     WDF_TIMER_CONFIG            wdfTimerConfig;
-    
 
+    deviceExtension = GetDeviceExtension(Device);
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, TARGET_DEVICE_INFO);
 
     status = WdfIoTargetCreate(deviceExtension->WdfDevice,
@@ -458,6 +563,7 @@ Return Value:
         STANDARD_RIGHTS_ALL);
 
     openParams.ShareAccess = FILE_SHARE_WRITE | FILE_SHARE_READ;
+
     //
     // Framework provides default action for all of these if you don't register
     // these callbacks -it will close the handle to the target when the device is
@@ -472,7 +578,6 @@ Return Value:
     openParams.EvtIoTargetRemoveCanceled = ToastMon_EvtIoTargetRemoveCanceled;
     openParams.EvtIoTargetRemoveComplete = ToastMon_EvtIoTargetRemoveComplete;
 
-
     status = WdfIoTargetOpen(ioTarget, &openParams);
 
     if (!NT_SUCCESS(status)) {
@@ -480,13 +585,13 @@ Return Value:
         WdfObjectDelete(ioTarget);
         return status;
     }
-   
+
     //
-    // NOTE: 
+    // NOTE:
     //
     // These WdfIoTargetWdmGetXxxx calls can be made outside of holding TargetDeviceCollectionLock
     // because we are in the interface arrival notification callback and the target cannot be
-    // gracefully or surprise removed until we return back to the kernel. 
+    // gracefully or surprise removed until we return back to the kernel.
     //
     // If the target is being opened in another context outside of interface arrival callback,
     // proper synchronization between the target's state change and the API calls must be made.
@@ -529,7 +634,7 @@ Return Value:
     //
     WDF_TIMER_CONFIG_INIT(&wdfTimerConfig,
                           Toastmon_EvtTimerPostRequests);
-     
+
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, TIMER_CONTEXT);
 
     //
@@ -546,11 +651,11 @@ Return Value:
 
     //
     // Setting the AutomaticSerialization to FALSE prevents
-    // WdfTimerCreate to fail if the parent device object's 
+    // WdfTimerCreate to fail if the parent device object's
     // execution level is set to WdfExecutionLevelPassive.
     //
     wdfTimerConfig.AutomaticSerialization = FALSE;
-    
+
     status = WdfTimerCreate(&wdfTimerConfig,
                        &attributes,
                        &targetDeviceInfo->TimerForPostingRequests
@@ -566,19 +671,12 @@ Return Value:
 
     //
     // Start the passive timer. The first timer will be queued after 1ms  interval and
-    // after that it will be requeued in the timer callback function. 
-    // The value of 1 ms (lowest timer resoltion allowed on NT) is chosen here so 
+    // after that it will be requeued in the timer callback function.
+    // The value of 1 ms (lowest timer resoltion allowed on NT) is chosen here so
     // that timer would fire right away.
     //
     WdfTimerStart(targetDeviceInfo->TimerForPostingRequests,
                                         WDF_REL_TIMEOUT_IN_MS(1));
-
-    //
-    // Can be set outside of holding TargetDeviceCollectionLock because we are
-    // creating the target in a notification callback and all subsequent state changes notifications
-    // can only happen after the arrival notification returns back to the kernel
-    //
-    targetDeviceInfo->Opened = TRUE;
 
     *Target = ioTarget;
 
@@ -586,10 +684,11 @@ Return Value:
 
 }
 
+_Use_decl_annotations_
 NTSTATUS
 ToastMon_EvtIoTargetQueryRemove(
     WDFIOTARGET IoTarget
-)
+    )
 /*++
 
 Routine Description:
@@ -610,36 +709,26 @@ Return Value:
 
 --*/
 {
-    PTARGET_DEVICE_INFO         targetDeviceInfo = NULL;
-    WDFWAITLOCK                 targetDeviceCollectionLock;
+    PTARGET_DEVICE_INFO         targetDeviceInfo;
 
     PAGED_CODE();
 
-    targetDeviceInfo = GetTargetDeviceInfo(IoTarget);
-
     KdPrint((("Device Removal (query remove) Notification\n")));
 
+    targetDeviceInfo = GetTargetDeviceInfo(IoTarget);
+
     //
-    // Stop the timer 
+    // Stop the timer
     //
 
     WdfTimerStop(targetDeviceInfo->TimerForPostingRequests, TRUE);
 
-    targetDeviceCollectionLock = targetDeviceInfo->DeviceExtension->TargetDeviceCollectionLock;
-
-    //
-    // The target is being query removed, set Opened to FALSE to match this state change.
-    //
-    WdfWaitLockAcquire(targetDeviceCollectionLock, NULL);
-    targetDeviceInfo->Opened = FALSE;
-    WdfWaitLockRelease(targetDeviceCollectionLock);
-
     WdfIoTargetCloseForQueryRemove(IoTarget);
 
     return STATUS_SUCCESS;
-
 }
 
+_Use_decl_annotations_
 VOID
 ToastMon_EvtIoTargetRemoveCanceled(
     WDFIOTARGET IoTarget
@@ -661,10 +750,9 @@ Return Value:
 
 --*/
 {
-    PTARGET_DEVICE_INFO         targetDeviceInfo = NULL;
-    WDFWAITLOCK                 targetDeviceCollectionLock;
+    PTARGET_DEVICE_INFO         targetDeviceInfo;
     WDF_IO_TARGET_OPEN_PARAMS   openParams;
-    NTSTATUS status;
+    NTSTATUS                    status;
 
     PAGED_CODE();
 
@@ -685,29 +773,18 @@ Return Value:
         return;
     }
 
-    targetDeviceCollectionLock = targetDeviceInfo->DeviceExtension->TargetDeviceCollectionLock;
-
-    //
-    // The query remove has failed and the target has been successfully reopened. Set Opened
-    // back to TRUE to reflect the state change.
-    //
-    WdfWaitLockAcquire(targetDeviceCollectionLock, NULL);
-    targetDeviceInfo->Opened = TRUE;
-    WdfWaitLockRelease(targetDeviceCollectionLock);
-
-
     //
     // Restart the timer.
     //
     WdfTimerStart(targetDeviceInfo->TimerForPostingRequests,
                                         WDF_REL_TIMEOUT_IN_SEC(1));
-
 }
 
+_Use_decl_annotations_
 VOID
 ToastMon_EvtIoTargetRemoveComplete(
     WDFIOTARGET IoTarget
-)
+    )
 /*++
 
 Routine Description:
@@ -721,48 +798,42 @@ Arguments:
 
 Return Value:
 
-
 --*/
 {
     PDEVICE_EXTENSION      deviceExtension;
-    PTARGET_DEVICE_INFO    targetDeviceInfo = NULL;
-
-    KdPrint((("Device Removal (remove complete) Notification\n")));
+    PTARGET_DEVICE_INFO    targetDeviceInfo;
 
     PAGED_CODE();
+
+    KdPrint((("Device Removal (remove complete) Notification\n")));
 
     targetDeviceInfo = GetTargetDeviceInfo(IoTarget);
     deviceExtension = targetDeviceInfo->DeviceExtension;
 
     //
-    // Stop the timer 
+    // Stop the timer
     //
     WdfTimerStop(targetDeviceInfo->TimerForPostingRequests, TRUE);
 
     //
-    // Remove the target device from the collection and set Opened to FALSE to match
-    // the state change (in the case of a surprise removal of the target, 
-    // ToastMon_EvtIoTargetQueryRemove is not called so Opened is still TRUE).
+    // Remove the target device from the collection
     //
     WdfWaitLockAcquire(deviceExtension->TargetDeviceCollectionLock, NULL);
 
     WdfCollectionRemove(deviceExtension->TargetDeviceCollection, IoTarget);
-    targetDeviceInfo->Opened = FALSE;
-     
+
     WdfWaitLockRelease(deviceExtension->TargetDeviceCollectionLock);
 
     //
     // Finally delete the target.
     //
     WdfObjectDelete(IoTarget);
-
-    return;
-
 }
 
+_Use_decl_annotations_
 VOID
 Toastmon_EvtTimerPostRequests(
-    IN WDFTIMER Timer
+    WDFTIMER Timer
     )
 /*++
 
@@ -776,18 +847,18 @@ Return Value:
 
 --*/
 {
-    PTARGET_DEVICE_INFO       targetInfo;
-    
-    WDFIOTARGET         ioTarget = GetTimerContext(Timer)->IoTarget;
+    PTARGET_DEVICE_INFO targetInfo;
+    WDFIOTARGET         ioTarget;
 
+    ioTarget = GetTimerContext(Timer)->IoTarget;
     targetInfo = GetTargetDeviceInfo(ioTarget);
 
     //
-    // Even though this routine and the completion routine check the 
-    // ReadRequest/WriteRequest field outside a lock, no harm is done. 
-    // Depending on how far the completion-routine has run, timer 
-    // may miss an opportunity to post a request. Even if we use a lock, 
-    // this race condition will still exist. 
+    // Even though this routine and the completion routine check the
+    // ReadRequest/WriteRequest field outside a lock, no harm is done.
+    // Depending on how far the completion-routine has run, timer
+    // may miss an opportunity to post a request. Even if we use a lock,
+    // this race condition will still exist.
     //
 
     //
@@ -809,13 +880,12 @@ Return Value:
     //
     WdfTimerStart(targetInfo->TimerForPostingRequests,
                                       WDF_REL_TIMEOUT_IN_SEC(1));
-
-    return;
 }
 
+_Use_decl_annotations_
 NTSTATUS
 ToastMon_PostReadRequests(
-    IN WDFIOTARGET IoTarget
+    WDFIOTARGET IoTarget
     )
 /*++
 
@@ -829,16 +899,25 @@ Return Value:
 
 --*/
 {
-
-    WDFREQUEST                  request;
-    NTSTATUS                    status;
-    PTARGET_DEVICE_INFO       targetInfo;
+    WDFREQUEST              request;
+    NTSTATUS                status;
+    PTARGET_DEVICE_INFO     targetInfo;
     WDFMEMORY               memory;
-    WDF_OBJECT_ATTRIBUTES       attributes;
+    WDF_OBJECT_ATTRIBUTES   attributes;
 
     targetInfo = GetTargetDeviceInfo(IoTarget);
 
-    request = targetInfo->ReadRequest;
+    //
+    // Clear the ReadRequest field in the context to avoid
+    // being reposted even before the reqeuest completes.
+    // This will be reset in the complete routine when the request completes.
+    //
+    request = InterlockedExchangePointer(&targetInfo->ReadRequest, NULL);
+    if (request == NULL) {
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        KdPrint(("Request is already posted\n", status));
+        goto exit;
+    }
 
     //
     // Allocate memory for read. Ideally I should have allocated the memory upfront along
@@ -859,7 +938,7 @@ Return Value:
 
     if (!NT_SUCCESS(status)) {
         KdPrint(("WdfMemoryCreate failed 0x%x\n", status));
-        return status;
+        goto exit;
     }
 
     status = WdfIoTargetFormatRequestForRead(
@@ -870,32 +949,30 @@ Return Value:
                                 NULL); // OutputBufferOffset
    if (!NT_SUCCESS(status)) {
         KdPrint(("WdfIoTargetFormatRequestForRead failed 0x%x\n", status));
-        return status;
+        goto exit;
     }
 
     WdfRequestSetCompletionRoutine(request,
                    Toastmon_ReadRequestCompletionRoutine,
                    targetInfo);
 
-    //
-    // Clear the ReadRequest field in the context to avoid
-    // being reposted even before the reqeuest completes.
-    // This will be reset in the complete routine when the request completes.
-    //
-    targetInfo->ReadRequest = NULL;
-
     if(WdfRequestSend(request, IoTarget, WDF_NO_SEND_OPTIONS) == FALSE) {
         status = WdfRequestGetStatus(request);
         KdPrint(("WdfRequestSend failed 0x%x\n", status));
-        targetInfo->ReadRequest = request;
+        goto exit;
     }
 
+exit:
+    if (!NT_SUCCESS(status)) {
+        targetInfo->ReadRequest = request;
+    }
     return status;
 }
 
+_Use_decl_annotations_
 NTSTATUS
 ToastMon_PostWriteRequests(
-    IN WDFIOTARGET IoTarget
+    WDFIOTARGET IoTarget
     )
 /*++
 
@@ -909,16 +986,25 @@ Return Value:
 
 --*/
 {
-
-    WDFREQUEST                  request;
-    NTSTATUS                    status;
-    PTARGET_DEVICE_INFO       targetInfo;
+    WDFREQUEST              request;
+    NTSTATUS                status;
+    PTARGET_DEVICE_INFO     targetInfo;
     WDFMEMORY               memory;
-    WDF_OBJECT_ATTRIBUTES       attributes;
+    WDF_OBJECT_ATTRIBUTES   attributes;
 
     targetInfo = GetTargetDeviceInfo(IoTarget);
 
-    request = targetInfo->WriteRequest;
+    //
+    // Clear the Write field in the context to avoid
+    // being reposted even before the reqeuest completes.
+    // This will be reset in the complete routine when the request completes.
+    //
+    request = InterlockedExchangePointer(&targetInfo->WriteRequest, NULL);
+    if (request == NULL) {
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        KdPrint(("Request is already posted\n", status));
+        goto exit;
+    }
 
     //
     // Allocate memory for write. Ideally I should have allocated the memory upfront along
@@ -939,7 +1025,7 @@ Return Value:
 
     if (!NT_SUCCESS(status)) {
         KdPrint(("WdfMemoryCreate failed 0x%x\n", status));
-        return status;
+        goto exit;
     }
 
     status = WdfIoTargetFormatRequestForWrite(
@@ -950,35 +1036,33 @@ Return Value:
                                 NULL); // OutputBufferOffset
    if (!NT_SUCCESS(status)) {
         KdPrint(("WdfIoTargetFormatRequestForWrite failed 0x%x\n", status));
-        return status;
+        goto exit;
     }
 
     WdfRequestSetCompletionRoutine(request,
                    Toastmon_WriteRequestCompletionRoutine,
                    targetInfo);
 
-
-    //
-    // Clear the WriteRequest field in the context to avoid
-    // being reposted even before the reqeuest completes.
-    // This will be reset in the complete routine when the request completes.
-    //
-    targetInfo->WriteRequest = NULL;
-
     if(WdfRequestSend(request, IoTarget, WDF_NO_SEND_OPTIONS) == FALSE) {
         status = WdfRequestGetStatus(request);
         KdPrint(("WdfRequestSend failed 0x%x\n", status));
+        goto exit;
+    }
+
+exit:
+    if (!NT_SUCCESS(status)) {
         targetInfo->WriteRequest = request;
     }
     return status;
 }
 
+_Use_decl_annotations_
 VOID
 Toastmon_ReadRequestCompletionRoutine(
-    IN WDFREQUEST                  Request,
-    IN WDFIOTARGET                 Target,
-    PWDF_REQUEST_COMPLETION_PARAMS CompletionParams,
-    IN WDFCONTEXT                  Context
+    WDFREQUEST                      Request,
+    WDFIOTARGET                     Target,
+    PWDF_REQUEST_COMPLETION_PARAMS  CompletionParams,
+    WDFCONTEXT                      Context
     )
 /*++
 
@@ -1000,13 +1084,13 @@ Return Value:
 --*/
 {
     WDF_REQUEST_REUSE_PARAMS    params;
-    PTARGET_DEVICE_INFO       targetInfo;
-    NTSTATUS status;
+    PTARGET_DEVICE_INFO         targetInfo;
+    NTSTATUS                    status;
 
     UNREFERENCED_PARAMETER(Context);
 
     targetInfo = GetTargetDeviceInfo(Target);
-    
+
     //
     // Delete the memory object because we create a new one every time we post
     // the request. For perf reason, it would be better to preallocate the memory
@@ -1024,6 +1108,7 @@ Return Value:
     status = WdfRequestReuse(Request, &params);
     ASSERT(NT_SUCCESS(status));
     _Analysis_assume_(NT_SUCCESS(status));
+
     //
     // RequestReuse zero all the values in structure pointed by CompletionParams.
     // So you must get all the information from completion params before
@@ -1036,15 +1121,15 @@ Return Value:
     // Don't repost the request in the completion routine because it may lead to recursion
     // if the driver below completes the request synchronously.
     //
-    return;
 }
 
+_Use_decl_annotations_
 VOID
 Toastmon_WriteRequestCompletionRoutine(
-    IN WDFREQUEST                  Request,
-    IN WDFIOTARGET                 Target,
-    PWDF_REQUEST_COMPLETION_PARAMS CompletionParams,
-    IN WDFCONTEXT                  Context
+    WDFREQUEST                      Request,
+    WDFIOTARGET                     Target,
+    PWDF_REQUEST_COMPLETION_PARAMS  CompletionParams,
+    WDFCONTEXT                      Context
     )
 /*++
 
@@ -1066,13 +1151,13 @@ Return Value:
 --*/
 {
     WDF_REQUEST_REUSE_PARAMS    params;
-    PTARGET_DEVICE_INFO       targetInfo;
-    NTSTATUS status;
+    PTARGET_DEVICE_INFO         targetInfo;
+    NTSTATUS                    status;
 
     UNREFERENCED_PARAMETER(Context);
 
     targetInfo = GetTargetDeviceInfo(Target);
-    
+
     //
     // Delete the memory object because we create a new one every time we post
     // the request. For perf reason, it would be better to preallocate even memory object.
@@ -1102,8 +1187,5 @@ Return Value:
     //
     // Don't repost the request in the completion routine because it may lead to recursion
     // if the driver below completes the request synchronously.
-    //    
-    return;
+    //
 }
-
-

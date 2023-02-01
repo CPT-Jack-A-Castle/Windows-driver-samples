@@ -43,7 +43,7 @@ extern "C" {
 #include <unknown.h>
 #include <ks.h>
 #include <ksmedia.h>
-#include <kcom.h>
+
 
 /*************************************************
 
@@ -216,6 +216,65 @@ public:
     Global Functions
 
 *************************************************/
+#ifndef _NEW_DELETE_OPERATORS_
+#define _NEW_DELETE_OPERATORS_
+
+/*************************************************
+
+    Add definitions that are missing for C++14.
+
+*************************************************/
+
+PVOID operator new
+(
+    size_t          iSize,
+    _When_((poolType & NonPagedPoolMustSucceed) != 0,
+       __drv_reportError("Must succeed pool allocations are forbidden. "
+             "Allocation failures cause a system crash"))
+    POOL_TYPE       poolType
+);
+
+PVOID operator new
+(
+    size_t          iSize,
+    _When_((poolType & NonPagedPoolMustSucceed) != 0,
+       __drv_reportError("Must succeed pool allocations are forbidden. "
+             "Allocation failures cause a system crash"))
+    POOL_TYPE       poolType,
+    ULONG           tag
+);
+
+/*++
+
+Routine Description:
+
+    Array new() operator for creating objects with a specified allocation tag.
+
+Arguments:
+
+    iSize -
+        The size of the entire allocation.
+
+    poolType -
+        The type of allocation.  Ex: PagedPool or NonPagedPoolNx
+
+    tag -
+        A 4-byte allocation identifier.
+
+Return Value:
+
+    None
+
+--*/
+PVOID 
+operator new[](
+    size_t          iSize,
+    _When_((poolType & NonPagedPoolMustSucceed) != 0,
+        __drv_reportError("Must succeed pool allocations are forbidden. "
+            "Allocation failures cause a system crash"))
+    POOL_TYPE       poolType,
+    ULONG           tag
+);
 
 /*++
 
@@ -233,18 +292,11 @@ Return Value:
     None
 
 --*/
-inline 
 void 
 __cdecl 
 operator delete[](
-	PVOID pVoid
-)
-{
-	if (pVoid)
-	{
-		ExFreePool(pVoid);
-	}
-}
+    PVOID pVoid
+);
 
 /*++
 
@@ -265,17 +317,11 @@ Return Value:
     None
 
 --*/
-inline void __cdecl operator delete
+void __cdecl operator delete
 (
-	void *pVoid,
-	size_t /*size*/
-)
-{
-	if (pVoid)
-	{
-		ExFreePool(pVoid);
-	}
-}
+    void *pVoid,
+    size_t /*size*/
+);
 
 /*++
 
@@ -296,17 +342,16 @@ Return Value:
     None
 
 --*/
-inline void __cdecl operator delete[]
+void __cdecl operator delete[]
 (
-	void *pVoid,
-	size_t /*size*/
-)
-{
-	if (pVoid)
-	{
-		ExFreePool(pVoid);
-	}
-}
+    void *pVoid,
+    size_t /*size*/
+);
+
+#endif // _NEW_DELETE_OPERATORS_
+
+
+
 
 /*************************************************
 

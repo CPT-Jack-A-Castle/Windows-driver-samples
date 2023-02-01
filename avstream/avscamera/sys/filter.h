@@ -58,6 +58,7 @@ private:
     // The AVStream filter object associated with this CCaptureFilter.
     //
     CCapturePin **m_pinArray;
+    ULONG        *m_pMinimumRequestedFrames;
 
 protected:
     //
@@ -71,6 +72,18 @@ protected:
     //
     void
     Cleanup();
+
+    NTSTATUS
+    GetExtrinsic(
+        _In_opt_    KS_CAMERA_EXTRINSICS *Data,
+        _In_        ULONG   PinId,
+        _Inout_     ULONG   *Length);
+
+    NTSTATUS
+    GetIntrinsic(
+        _In_opt_    KS_CAMERA_INTRINSICS *Data,
+        _In_        ULONG   PinId,
+        _Inout_     ULONG   *Length);
 
 public:
 
@@ -319,6 +332,9 @@ DECLARE_PROPERTY_SET_HANDLER( type, name )
     DECLARE_PROPERTY_HANDLERS( CExtendedProperty, Thumbnail )
     DECLARE_PROPERTY_HANDLERS( CExtendedProperty, TriggerTime )
     DECLARE_PROPERTY_HANDLERS( CExtendedProperty, TorchMode )
+    DECLARE_PROPERTY_HANDLERS( CExtendedVidProcSetting, IRTorch )
+    DECLARE_PROPERTY_HANDLERS( CExtendedProperty, VideoTemporalDenoising)
+    DECLARE_PROPERTY_HANDLERS( CExtendedProperty, RelativePanel)
 
     DECLARE_PROPERTY_HANDLERS( KSPROPERTY_CAMERACONTROL_VIDEOSTABILIZATION_MODE_S, VideoStabMode )
     DECLARE_PROPERTY_HANDLERS( KSPROPERTY_CAMERACONTROL_FLASH_S, Flash )
@@ -372,12 +388,28 @@ DECLARE_PROPERTY_SET_HANDLER( type, name )
     //  Make sure the PERFRAMESETTINGs passed to us are valid.
     _Success_(return == 0)
     NTSTATUS
-    CCaptureFilter::ParsePFSBuffer(
+    ParsePFSBuffer(
         _In_reads_bytes_(BufferLimit)
         PKSCAMERA_PERFRAMESETTING_HEADER    pPFS,
         _In_    ULONG                               BufferLimit,
         _Outptr_opt_result_maybenull_
         ISP_FRAME_SETTINGS                **ppSettings );
+
+    static
+    NTSTATUS
+    GetExtrinsics(
+        _In_    PIRP            pIrp,
+        _In_    PKSP_PIN        pProperty,
+        _Inout_ PVOID           pData
+    );
+
+    static
+    NTSTATUS
+    GetIntrinsics(
+        _In_    PIRP            pIrp,
+        _In_    PKSP_PIN        pProperty,
+        _Inout_ PVOID           pData
+    );
 
     //  Helper function for finding our filter object.
     static
@@ -405,7 +437,8 @@ DECLARE_PROPERTY_SET_HANDLER( type, name )
     //  Update the pin's allocator to a specific frame count.
     NTSTATUS
     UpdateAllocatorFraming( 
-        _In_    ULONG PinId
+        _In_    ULONG PinId,
+        _In_    ULONG DesiredFrames
     );
 
 private:

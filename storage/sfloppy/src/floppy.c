@@ -45,6 +45,7 @@ Revision History:
 #define MODE_DATA_SIZE      192
 #define SCSI_FLOPPY_TIMEOUT  20
 #define SFLOPPY_SRB_LIST_SIZE 4
+#define SFLOPPY_TAG      'poFS'
 //
 // Define all possible drive/media combinations, given drives listed above
 // and media types in ntdddisk.h.
@@ -649,7 +650,7 @@ Return Value:
         DeviceCount++;
 
         status = RtlStringCbPrintfA((PCCHAR) name,
-                                    sizeof(name)/sizeof(UCHAR),
+                                    sizeof(name),
                                     "\\Device\\Floppy%u",
                                     DeviceCount);
         if (NT_SUCCESS(status)) {
@@ -779,7 +780,9 @@ ScsiFlopInitDevice(
     // Allocate request sense buffer.
     //
 
-    senseData = ExAllocatePool(NonPagedPoolNxCacheAligned, SENSE_BUFFER_SIZE);
+    senseData = ExAllocatePool2(POOL_FLAG_NON_PAGED | POOL_FLAG_CACHE_ALIGNED,
+                                SENSE_BUFFER_SIZE,
+                                SFLOPPY_TAG);
 
     if (senseData == NULL) {
 
@@ -909,7 +912,7 @@ NTSTATUS ScsiFlopStartDevice(
     //
 
     RtlStringCbPrintfW(ntNameBuffer,
-                       sizeof(ntNameBuffer)/sizeof(WCHAR),
+                       sizeof(ntNameBuffer),
                        L"\\Device\\Floppy%u",
                        fdoExtension->DeviceNumber);
 
@@ -955,7 +958,7 @@ NTSTATUS ScsiFlopStartDevice(
     if (NT_SUCCESS(status)) {
 
         RtlStringCbPrintfW(arcNameBuffer,
-                           sizeof(arcNameBuffer)/sizeof(WCHAR),
+                           sizeof(arcNameBuffer),
                            L"\\ArcName\\scsi(%u)disk(%u)fdisk(%u)",
                            scsiAddress.PortNumber,
                            scsiAddress.TargetId,
@@ -977,7 +980,7 @@ NTSTATUS ScsiFlopStartDevice(
     //
 
     RtlStringCbPrintfW(arcNameBuffer,
-                       sizeof(arcNameBuffer)/sizeof(WCHAR),
+                       sizeof(arcNameBuffer),
                        L"\\ArcName\\multi(%u)disk(%u)fdisk(%u)",
                        0,
                        0,
@@ -1089,7 +1092,9 @@ Return Value:
     //
     Irp->IoStatus.Information = 0;
 
-    srb = ExAllocatePool(NonPagedPoolNx, SCSI_REQUEST_BLOCK_SIZE);
+    srb = ExAllocatePool2(POOL_FLAG_NON_PAGED,
+                          SCSI_REQUEST_BLOCK_SIZE,
+                          SFLOPPY_TAG);
 
     if (srb == NULL) {
 

@@ -64,6 +64,7 @@ Return Value:
     m_pCaptureDevice(NULL),
     m_pPerFrameSettings(nullptr),
     m_pinArray(nullptr),
+    m_pMinimumRequestedFrames(nullptr),
     m_PhotoModeNotifier( Filter, &KSEVENTSETID_ExtendedCameraControl, KSPROPERTY_CAMERACONTROL_EXTENDED_PHOTOMODE ),
     m_PhotoMaxFrameRateNotifier( Filter, &KSEVENTSETID_ExtendedCameraControl, KSPROPERTY_CAMERACONTROL_EXTENDED_PHOTOMAXFRAMERATE) ,
     m_FocusNotifier( Filter, &KSEVENTSETID_ExtendedCameraControl, KSPROPERTY_CAMERACONTROL_EXTENDED_FOCUSMODE ),
@@ -141,10 +142,12 @@ Return Value:
     IFFAILED_EXIT( m_Sensor->AddFilter(m_pKSFilter) );
 
     IFNULL_EXIT(m_pinArray = new (PagedPool, 'sniP') CCapturePin *[m_Sensor->GetPinCount()]);
+    IFNULL_EXIT(m_pMinimumRequestedFrames = new (PagedPool, 'sniP') ULONG[m_Sensor->GetPinCount()]);
 
     for( ULONG i=0; i<m_Sensor->GetPinCount(); i++ )
     {
         m_pinArray[i] = nullptr;
+        m_pMinimumRequestedFrames[i] = IMAGE_CAPTURE_PIN_MINIMUM_FRAMES;
     }
 
 done:
@@ -209,6 +212,7 @@ CCaptureFilter::~CCaptureFilter()
     //  may need to have some things reset.
     m_Sensor->Reset();
 
+    delete [] m_pMinimumRequestedFrames;
     delete [] m_pinArray;
 
     DBG_LEAVE("(%S)", Name);
@@ -352,6 +356,11 @@ Return Value:
 
     //  Take out a weak reference to the pin object.
     m_pinArray[Id] = pPin;
+    if (m_pinArray[Id] != nullptr)
+    {
+        m_pinArray[Id]->SetDesiredFrames(m_pMinimumRequestedFrames[Id]);
+        (void)m_pinArray[Id]->UpdateAllocatorFraming();
+    }
 }
 
 CCapturePin *
@@ -391,7 +400,8 @@ Return Value:
 NTSTATUS
 CCaptureFilter::
 UpdateAllocatorFraming( 
-    _In_    ULONG PinId
+    _In_    ULONG PinId,
+    _In_    ULONG DesiredFrames
 )
 /*++
 
@@ -412,14 +422,19 @@ Return Value:
 {
     PAGED_CODE();
 
-    NTSTATUS    Status = STATUS_INVALID_PARAMETER;
+    NTSTATUS    Status = STATUS_SUCCESS;
 
     //  Acquire the lock and update the Pin's allocator framing.
     LockFilter Lock(m_pKSFilter);
     
     if( m_pinArray[PinId] )
     {
+        m_pinArray[PinId]->SetDesiredFrames(DesiredFrames);
         Status = m_pinArray[PinId]->UpdateAllocatorFraming();
+    }
+    else
+    {
+        m_pMinimumRequestedFrames[PinId] = DesiredFrames;
     }
 
     DBG_LEAVE("()=0x%08X",Status);
@@ -636,6 +651,7 @@ SetPhotoMode(
     PAGED_CODE();
 
     NTSTATUS    Status = STATUS_INVALID_PARAMETER;
+    ULONG   TotalFrames = IMAGE_CAPTURE_PIN_MINIMUM_FRAMES;
 
     DBG_ENTER( "()" );
 
@@ -645,10 +661,6 @@ SetPhotoMode(
     {
         CExtendedPhotoMode  Caps(*pMode);
         Status = m_Sensor->GetPhotoMode( &Caps );
-        CCapturePin *pPin = getPin(pMode->PinId);
-
-        //  Should always be valid.
-        NT_ASSERT(pPin);
 
         if( NT_SUCCESS(Status) )
         {
@@ -686,7 +698,7 @@ SetPhotoMode(
 
                     //  Assume the normal photo sequence case.
                     //  For normal photo sequence, we provide history frames +1 or at least a minimum of 3 frames.
-                    ULONG   TotalFrames = pMode->RequestedHistoryFrames() + 1;
+                    TotalFrames = pMode->RequestedHistoryFrames() + 1;
 
                     //  Modify TotalFrames for the VPS case.
                     //  For VPS, we need LoopCount * FrameCount; but limit by the minimum(3) and maximum (20) frames.
@@ -708,14 +720,12 @@ SetPhotoMode(
                     DBG_TRACE( "Advertising Framing requirement: %d", TotalFrames );
 
 
-                    pPin->SetDesiredFrames(TotalFrames);
                     Status = STATUS_SUCCESS;
                     break;
                 }
                 case KSCAMERA_EXTENDEDPROP_PHOTOMODE_NORMAL:
                 {
                     //  Set it back to the minimum number of frames.
-                    pPin->SetDesiredFrames(IMAGE_CAPTURE_PIN_MINIMUM_FRAMES);
                     Status = STATUS_SUCCESS;
                     break;
                 }
@@ -724,7 +734,7 @@ SetPhotoMode(
                 //  Update allocator framing.
                 if( NT_SUCCESS( Status ) )
                 {
-                    Status = UpdateAllocatorFraming( pMode->PinId );
+                    Status = UpdateAllocatorFraming( pMode->PinId, TotalFrames );
                 }
 
                 //  Update the sensor object...
@@ -1118,13 +1128,13 @@ GetTorchMode(
 
     NTSTATUS    Status = STATUS_INVALID_PARAMETER;
 
-    if( pTorchMode->isValid() &&
-            pTorchMode->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE )
+    if (pTorchMode->isValid() &&
+        pTorchMode->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE)
     {
-        Status = m_Sensor->GetTorchMode( pTorchMode );
+        Status = m_Sensor->GetTorchMode(pTorchMode);
     }
     DBG_LEAVE("(PinId=%d, Flags=0x%016llX, Cap=0x%016llX)=0x%08X",
-              pTorchMode->PinId, pTorchMode->Flags, pTorchMode->Capability, Status );
+        pTorchMode->PinId, pTorchMode->Flags, pTorchMode->Capability, Status);
     return Status;
 }
 
@@ -1139,34 +1149,101 @@ SetTorchMode(
 
     NTSTATUS    Status = STATUS_INVALID_PARAMETER;
 
-    if( !(pTorchMode->Capability & KSCAMERA_EXTENDEDPROP_CAPS_ASYNCCONTROL) &&
-            pTorchMode->isValid() &&
-            pTorchMode->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE &&
-            pTorchMode->m_Value.Value.ul <= 100 )
+    if (!(pTorchMode->Capability & KSCAMERA_EXTENDEDPROP_CAPS_ASYNCCONTROL) &&
+        pTorchMode->isValid() &&
+        pTorchMode->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE &&
+        pTorchMode->m_Value.Value.ul <= 100)
     {
         CExtendedProperty   Caps(*pTorchMode);
         Status = m_Sensor->GetTorchMode(&Caps);
 
-        if( NT_SUCCESS(Status) )
+        if (NT_SUCCESS(Status))
         {
             //  Assume an invalid parameter.
             Status = STATUS_INVALID_PARAMETER;
 
-            if( pTorchMode->Flags == (pTorchMode->Flags & Caps.Capability) )
+            if (pTorchMode->Flags == (pTorchMode->Flags & Caps.Capability))
             {
-                switch( pTorchMode->Flags )
+                switch (pTorchMode->Flags)
                 {
                 case KSCAMERA_EXTENDEDPROP_VIDEOTORCH_OFF:
                 case KSCAMERA_EXTENDEDPROP_VIDEOTORCH_ON:
                 case KSCAMERA_EXTENDEDPROP_VIDEOTORCH_ON_ADJUSTABLEPOWER:
-                    Status = m_Sensor->SetTorchMode( pTorchMode );
+                    Status = m_Sensor->SetTorchMode(pTorchMode);
                     break;
                 }
             }
         }
     }
     DBG_LEAVE("(PinId=%d, Flags=0x%016llX, Cap=0x%016llX)=0x%08X",
-              pTorchMode->PinId, pTorchMode->Flags, pTorchMode->Capability, Status );
+        pTorchMode->PinId, pTorchMode->Flags, pTorchMode->Capability, Status);
+    return Status;
+}
+
+//  Get KSPROPERTY_CAMERACONTROL_EXTENDED_IRTORCHMODE
+NTSTATUS
+CCaptureFilter::
+GetIRTorch(
+    _Inout_ CExtendedVidProcSetting  *pTorch
+)
+{
+    PAGED_CODE();
+
+    NTSTATUS    Status = STATUS_INVALID_PARAMETER;
+
+    if (pTorch->isValid() &&
+        pTorch->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE)
+    {
+        Status = m_Sensor->GetIRTorch(pTorch);
+    }
+    DBG_LEAVE("(PinId=%d, Flags=0x%016llX, Cap=0x%016llX)=0x%08X",
+        pTorch->PinId, pTorch->Flags, pTorch->Capability, Status);
+    return Status;
+}
+
+//  Set KSPROPERTY_CAMERACONTROL_EXTENDED_IRTORCHMODE
+NTSTATUS
+CCaptureFilter::
+SetIRTorch(
+    _In_    CExtendedVidProcSetting  *pTorch
+)
+{
+    PAGED_CODE();
+
+    NTSTATUS    Status = STATUS_INVALID_PARAMETER;
+
+    if (!(pTorch->Capability & KSCAMERA_EXTENDEDPROP_CAPS_ASYNCCONTROL) &&
+        pTorch->isValid() &&
+        pTorch->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE)
+    {
+        CExtendedVidProcSetting Caps(*pTorch);
+        Status = m_Sensor->GetIRTorch(&Caps);
+
+        if (NT_SUCCESS(Status))
+        {
+            Status = Caps.BoundsCheck(pTorch->GetULONG());
+
+            if (NT_SUCCESS(Status))
+            {
+                //  Assume an invalid parameter.
+                Status = STATUS_INVALID_PARAMETER;
+
+                if (pTorch->Flags == (pTorch->Flags & Caps.Capability))
+                {
+                    switch (pTorch->Flags)
+                    {
+                    case KSCAMERA_EXTENDEDPROP_IRTORCHMODE_OFF:
+                    case KSCAMERA_EXTENDEDPROP_IRTORCHMODE_ALWAYS_ON:
+                    case KSCAMERA_EXTENDEDPROP_IRTORCHMODE_ALTERNATING_FRAME_ILLUMINATION:
+                        Status = m_Sensor->SetIRTorch(pTorch);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    DBG_LEAVE("(PinId=%d, Flags=0x%016llX, Cap=0x%016llX)=0x%08X",
+        pTorch->PinId, pTorch->Flags, pTorch->Capability, Status);
     return Status;
 }
 
@@ -3029,8 +3106,7 @@ SetVFR(
             pVFR->isValid() &&
             pVFR->Capability == 0 &&
             (KSCAMERA_EXTENDEDPROP_VFR_OFF == pVFR->Flags ||
-             KSCAMERA_EXTENDEDPROP_VFR_ON  == pVFR->Flags ||
-             KSCAMERA_EXTENDEDPROP_VIDEOHDR_AUTO == pVFR->Flags ) )
+             KSCAMERA_EXTENDEDPROP_VFR_ON  == pVFR->Flags) )
     {
         //Set the current VFR state
         Status = m_Sensor->SetVFR( pVFR );
@@ -3370,6 +3446,69 @@ SetVideoStabilization(
     return Status;
 }
 
+//  Get KSPROPERTY_CAMERACONTROL_EXTENDED_VIDEOTEMPORALDENOISING.
+NTSTATUS
+CCaptureFilter::
+GetVideoTemporalDenoising(
+    _Inout_ CExtendedProperty *pVideoTemporalDenoising
+)
+{
+    PAGED_CODE();
+    NTSTATUS Status = STATUS_INVALID_PARAMETER;
+
+    // Call must come for filter scope only
+    if (pVideoTemporalDenoising->isValid() &&
+        pVideoTemporalDenoising->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE)
+    {
+        //Get the current state
+        Status = m_Sensor->GetVideoTemporalDenoising(pVideoTemporalDenoising);
+    }
+
+    DBG_TRACE("pVideoTemporalDenoising = %p, PinId = %u, Flags = %llu, Version = %u",
+        pVideoTemporalDenoising, pVideoTemporalDenoising->PinId, pVideoTemporalDenoising->Flags, pVideoTemporalDenoising->Version);
+
+    return Status;
+}
+
+//  Set KSPROPERTY_CAMERACONTROL_EXTENDED_VIDEOTEMPORALDENOISING.
+NTSTATUS
+CCaptureFilter::
+SetVideoTemporalDenoising(
+    _In_ CExtendedProperty *pVideoTemporalDenoising
+)
+{
+    PAGED_CODE();
+
+    NTSTATUS Status = STATUS_INVALID_PARAMETER;
+
+    // Call must come for filter scope only and flags must be supported and mutually exclusive
+    if (pVideoTemporalDenoising->isValid() && 
+        pVideoTemporalDenoising->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE &&
+        !(pVideoTemporalDenoising->Capability & KSCAMERA_EXTENDEDPROP_CAPS_ASYNCCONTROL) &&
+        (KSCAMERA_EXTENDEDPROP_VIDEOTEMPORALDENOISING_AUTO == pVideoTemporalDenoising->Flags ||
+            KSCAMERA_EXTENDEDPROP_VIDEOTEMPORALDENOISING_OFF == pVideoTemporalDenoising->Flags ||
+            KSCAMERA_EXTENDEDPROP_VIDEOTEMPORALDENOISING_ON == pVideoTemporalDenoising->Flags))
+    {
+        CExtendedProperty Caps(*pVideoTemporalDenoising);
+        Status = m_Sensor->GetVideoTemporalDenoising(&Caps);
+
+        if (NT_SUCCESS(Status))
+        {
+            //  Assume an invalid parameter.
+            Status = STATUS_INVALID_PARAMETER;
+
+            if (pVideoTemporalDenoising->Flags == (pVideoTemporalDenoising->Flags & Caps.Capability))
+            {
+                Status = m_Sensor->SetVideoTemporalDenoising(pVideoTemporalDenoising);
+            }
+        }
+    }
+    DBG_TRACE("pVideoTemporalDenoising = %p, PinId = %u, Flags = %llu, Version = %u",
+        pVideoTemporalDenoising, pVideoTemporalDenoising->PinId, pVideoTemporalDenoising->Flags, pVideoTemporalDenoising->Version);
+
+    return Status;
+}
+
 //  Get KSPROPERTY_CAMERACONTROL_EXTENDED_OIS.
 NTSTATUS
 CCaptureFilter::
@@ -3428,6 +3567,66 @@ SetOpticalImageStabilization(
     }
     DBG_TRACE("pOIS = %p, PinId = %u, Flags = %llu, Version = %u",
               pOIS, pOIS->PinId, pOIS->Flags, pOIS->Version);
+
+    return Status;
+}
+
+//  Get KSPROPERTY_CAMERACONTROL_EXTENDED_RELATIVEPANEL.
+NTSTATUS
+CCaptureFilter::
+GetRelativePanel(
+    _Inout_ CExtendedProperty   *pRelativePanel
+)
+{
+    PAGED_CODE();
+    NTSTATUS Status = STATUS_INVALID_PARAMETER;
+
+    if (pRelativePanel->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE &&
+        pRelativePanel->isValid())
+    {
+        //Get the current state
+        Status = m_Sensor->GetRelativePanel(pRelativePanel);
+    }
+
+    DBG_TRACE("pRelativePanel = %p, PinId = %u, Flags = %llu, Version = %u",
+        pRelativePanel, pRelativePanel->PinId, pRelativePanel->Flags, pRelativePanel->Version);
+
+    return Status;
+}
+
+//  Set KSPROPERTY_CAMERACONTROL_EXTENDED_RELATIVEPANEL.
+NTSTATUS
+CCaptureFilter::
+SetRelativePanel(
+    _In_    CExtendedProperty   *pRelativePanel
+)
+{
+    PAGED_CODE();
+
+    NTSTATUS Status = STATUS_INVALID_PARAMETER;
+
+    // Call must be Filter and flags must be supported and version must be 1
+    if (pRelativePanel->PinId == KSCAMERA_EXTENDEDPROP_FILTERSCOPE &&
+        pRelativePanel->isValid() &&
+        (KSCAMERA_EXTENDEDPROP_RELATIVEPANELOPTIMIZATION_ON == pRelativePanel->Flags ||
+            KSCAMERA_EXTENDEDPROP_RELATIVEPANELOPTIMIZATION_OFF == pRelativePanel->Flags))
+    {
+        CExtendedProperty   Caps(*pRelativePanel);
+        Status = m_Sensor->GetRelativePanel(&Caps);
+
+        if (NT_SUCCESS(Status))
+        {
+            //  Assume an invalid parameter.
+            Status = STATUS_INVALID_PARAMETER;
+
+            if (pRelativePanel->Flags == (pRelativePanel->Flags & Caps.Capability))
+            {
+                Status = m_Sensor->SetRelativePanel(pRelativePanel);
+            }
+        }
+    }
+    DBG_TRACE("pOIS = %p, PinId = %u, Flags = %llu, Version = %u",
+        pRelativePanel, pRelativePanel->PinId, pRelativePanel->Flags, pRelativePanel->Version);
 
     return Status;
 }
@@ -4077,4 +4276,177 @@ GetVideoControlCaps(
                pCaps->StreamIndex, pCaps->VideoControlCaps, Status );
     return Status;
 }
+
+NTSTATUS
+CCaptureFilter::GetExtrinsic(
+    _In_opt_    KS_CAMERA_EXTRINSICS *Data,
+    _In_        ULONG   PinId,
+    _Inout_     ULONG   *Length)
+{
+    PAGED_CODE();
+
+    if( PinId < m_pKSFilter->Descriptor->PinDescriptorsCount )
+    {
+        CCameraExtrinsics_2Transforms Extrinsics( PinId );     // Parameters are just identification for now.
+        if( Data )
+        {
+            RtlCopyMemory(Data, &Extrinsics, sizeof(Extrinsics));
+        }
+
+        *Length = sizeof(Extrinsics);
+        return STATUS_SUCCESS;
+    }
+    return STATUS_INVALID_PARAMETER;
+}
+
+NTSTATUS
+CCaptureFilter::GetIntrinsic(
+    _In_opt_    KS_CAMERA_INTRINSICS *Data,
+    _In_        ULONG   PinId,
+    _Inout_     ULONG   *Length)
+{
+    PAGED_CODE();
+
+    if( PinId < m_pKSFilter->Descriptor->PinDescriptorsCount )
+    {
+        CCameraIntrinsics_2Models Intrinsics;
+        if( Data )
+        {
+            RtlCopyMemory(Data, &Intrinsics, sizeof(Intrinsics));
+        }
+
+        *Length = sizeof(Intrinsics);
+        return STATUS_SUCCESS;
+    }
+    return STATUS_INVALID_PARAMETER;
+}
+
+//  Get KSPROPERTY_CAMERA_ATTRIBUTES_EXTRINSICS
+NTSTATUS
+CCaptureFilter::GetExtrinsics(
+    _In_    PIRP            pIrp,
+    _In_    PKSP_PIN        pProperty,
+    _Inout_ PVOID           pData
+)
+{
+    PAGED_CODE();
+
+    NT_ASSERT(pIrp);
+    NT_ASSERT(pProperty);
+
+    CCaptureFilter *pFilter = reinterpret_cast <CCaptureFilter *>(KsGetFilterFromIrp(pIrp)->Context);
+    PIO_STACK_LOCATION pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
+    ULONG ulOutputBufferLength = pIrpStack->Parameters.DeviceIoControl.OutputBufferLength;
+    ULONG RequiredLength = 0;
+
+    NTSTATUS Status =
+        pFilter->GetExtrinsic( nullptr, pProperty->PinId, &RequiredLength );
+
+    // Note: We may want to determine capabilities at runtime in the future.
+
+    //  We only handle GETs
+    if( NT_SUCCESS(Status) )
+    {
+        RequiredLength += sizeof(KSCAMERA_ATTRIBUTES_HEADER);
+
+        if (ulOutputBufferLength == 0)
+        {
+            pIrp->IoStatus.Information = RequiredLength;
+            Status = STATUS_BUFFER_OVERFLOW;
+        }
+        else if (ulOutputBufferLength < RequiredLength)
+        {
+            Status = STATUS_BUFFER_TOO_SMALL;
+        }
+        else if (pData && ulOutputBufferLength >= RequiredLength)
+        {
+            PKSCAMERA_ATTRIBUTES_HEADER pHdr = (PKSCAMERA_ATTRIBUTES_HEADER) pData;
+            PKS_CAMERA_EXTRINSICS pExtrinsic = (PKS_CAMERA_EXTRINSICS) (pHdr + 1);
+            ULONG Size=0;
+
+            Status =
+                pFilter->GetExtrinsic(
+                    pExtrinsic,
+                    pProperty->PinId, 
+                    &Size );
+
+            if( NT_SUCCESS(Status) )
+            {
+                pHdr->Size = RequiredLength;
+                pHdr->PinId = pProperty->PinId;
+                pIrp->IoStatus.Information = RequiredLength;
+            }
+        }
+        else
+        {
+            Status = STATUS_INVALID_PARAMETER;
+        }
+    }
+    return Status;
+}
+
+//  Get KSPROPERTY_CAMERA_ATTRIBUTES_INTRINSICS
+NTSTATUS
+CCaptureFilter::GetIntrinsics(
+    _In_    PIRP            pIrp,
+    _In_    PKSP_PIN        pProperty,
+    _Inout_ PVOID           pData
+)
+{
+    PAGED_CODE();
+
+    NT_ASSERT(pIrp);
+    NT_ASSERT(pProperty);
+
+    CCaptureFilter *pFilter = reinterpret_cast <CCaptureFilter *>(KsGetFilterFromIrp(pIrp)->Context);
+    PIO_STACK_LOCATION pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
+    ULONG ulOutputBufferLength = pIrpStack->Parameters.DeviceIoControl.OutputBufferLength;
+    ULONG RequiredLength = 0;
+
+    NTSTATUS Status =
+        pFilter->GetIntrinsic( nullptr, pProperty->PinId, &RequiredLength );
+
+    // Note: We may want to determine capabilities at runtime in the future.
+
+    //  We only handle GETs
+    if( NT_SUCCESS(Status) )
+    {
+        RequiredLength += sizeof(KSCAMERA_ATTRIBUTES_HEADER);
+
+        if (ulOutputBufferLength == 0)
+        {
+            pIrp->IoStatus.Information = RequiredLength;
+            Status = STATUS_BUFFER_OVERFLOW;
+        }
+        else if (ulOutputBufferLength < RequiredLength)
+        {
+            Status = STATUS_BUFFER_TOO_SMALL;
+        }
+        else if (pData && ulOutputBufferLength >= RequiredLength)
+        {
+            PKSCAMERA_ATTRIBUTES_HEADER pHdr = (PKSCAMERA_ATTRIBUTES_HEADER) pData;
+            PKS_CAMERA_INTRINSICS pIntrinsic = (PKS_CAMERA_INTRINSICS) (pHdr + 1);
+            ULONG Size=0;
+
+            Status =
+                pFilter->GetIntrinsic(
+                    pIntrinsic,
+                    pProperty->PinId, 
+                    &Size );
+
+            if( NT_SUCCESS(Status) )
+            {
+                pHdr->Size = RequiredLength;
+                pHdr->PinId = pProperty->PinId;
+                pIrp->IoStatus.Information = RequiredLength;
+            }
+        }
+        else
+        {
+            Status = STATUS_INVALID_PARAMETER;
+        }
+    }
+    return Status;
+}
+
 

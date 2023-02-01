@@ -161,6 +161,7 @@
       <AdditionalOptions>%(AdditionalOptions)  /ignore:4254</AdditionalOptions>
       <ModuleDefinitionFile>kbd106.def</ModuleDefinitionFile>
       <NoEntryPoint>true</NoEntryPoint>
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
     </Link>
     <ClCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
@@ -168,6 +169,7 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\inc</AdditionalIncludeDirectories>
       <ExceptionHandling>
       </ExceptionHandling>
+      <ControlFlowGuard>false</ControlFlowGuard>
     </ClCompile>
     <Midl>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
@@ -186,13 +188,16 @@
       <AdditionalOptions>%(AdditionalOptions)  /ignore:4254</AdditionalOptions>
       <ModuleDefinitionFile>kbd106.def</ModuleDefinitionFile>
       <NoEntryPoint>true</NoEntryPoint>
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
     </Link>
     <ClCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);JAPAN</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\inc</AdditionalIncludeDirectories>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <ExceptionHandling>
       </ExceptionHandling>
+      <ControlFlowGuard>false</ControlFlowGuard>
     </ClCompile>
     <Midl>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
@@ -211,6 +216,7 @@
       <AdditionalOptions>%(AdditionalOptions)  /ignore:4254</AdditionalOptions>
       <ModuleDefinitionFile>kbd106.def</ModuleDefinitionFile>
       <NoEntryPoint>true</NoEntryPoint>
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
     </Link>
     <ClCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
@@ -218,6 +224,7 @@
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\inc</AdditionalIncludeDirectories>
       <ExceptionHandling>
       </ExceptionHandling>
+      <ControlFlowGuard>false</ControlFlowGuard>
     </ClCompile>
     <Midl>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
@@ -236,13 +243,16 @@
       <AdditionalOptions>%(AdditionalOptions)  /ignore:4254</AdditionalOptions>
       <ModuleDefinitionFile>kbd106.def</ModuleDefinitionFile>
       <NoEntryPoint>true</NoEntryPoint>
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
     </Link>
     <ClCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);JAPAN</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);..\inc</AdditionalIncludeDirectories>
+      <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <ExceptionHandling>
       </ExceptionHandling>
+      <ControlFlowGuard>false</ControlFlowGuard>
     </ClCompile>
     <Midl>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);FE_SB;FE_IME</PreprocessorDefinitions>
